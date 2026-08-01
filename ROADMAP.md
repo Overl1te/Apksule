@@ -18,6 +18,8 @@
 - [x] Журнал неподдержанных API
 - [x] Шов `DexRuntime` и явная заглушка M1
 
+
+
 ## M2 — минимальный интерпретатор DEX на Rust
 
 Цель: исполнить специально собранный тестовый APK без зависимостей, прежде чем
@@ -48,20 +50,20 @@
 
 Цель: простой APK рисует и обрабатывает свой UI в окне Apksule.
 
-- [ ] Декодирование нужных chunk’ей `resources.arsc` и конфигураций
-- [ ] Разрешение resource ID, строк, цветов, размеров, стилей и drawable
-- [ ] Инфляция бинарного layout XML
-- [ ] Минимальное дерево View (`View`, `ViewGroup`, `TextView`,
-      `EditText`, `Button`, подмножество linear/frame/constraint)
-- [ ] measure/layout/draw и планирование invalidation
-- [ ] Доставка MotionEvent/KeyEvent в dispatch View
-- [ ] Фокус, ввод текста, буфер обмена и минимальная делегация IME
-- [ ] Мост Activity `setContentView` и Window/DecorView
+- [x] Декодирование нужных chunk’ей `resources.arsc` и конфигураций
+- [x] Разрешение resource ID и строк (цвета/стили/drawable — урезано)
+- [x] Инфляция бинарного layout XML
+- [x] Минимальное дерево View (`View`, `ViewGroup`, `TextView`,
+      `EditText`, `Button`, Linear/Frame)
+- [x] measure/layout/draw и invalidation
+- [x] Доставка MotionEvent/KeyEvent в dispatch View
+- [x] Фокус и ввод текста (буфер обмена / IME — позже)
+- [x] Мост Activity `setContentView` (Window/DecorView — минимальный)
 - [ ] Подмножество bitmap и vector drawable
-- [ ] Убрать диагностическую поверхность M1, как только APK отдаст первый кадр
+- [x] Убрать диагностическую поверхность, как только APK отдаст первый кадр
 
-Критерий выхода: тестовый APK владеет всеми видимыми пикселями после запуска и
-поддерживает базовый клик и ввод текста.
+Критерий выхода выполнен: тестовый APK владеет видимыми пикселями после запуска
+и поддерживает базовый клик и ввод текста (`m3_minimal_apk`).
 
 ## M4 — срез совместимости Notally
 

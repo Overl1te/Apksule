@@ -67,6 +67,11 @@ impl Resources {
         self.source.contains(apk_path)
     }
 
+    /// Load an arbitrary APK entry path (e.g. `res/layout/main.xml`).
+    pub fn load_entry(&self, apk_path: &str) -> Result<Vec<u8>> {
+        self.load_path(apk_path)
+    }
+
     fn load_path(&self, apk_path: &str) -> Result<Vec<u8>> {
         self.source
             .load(apk_path)

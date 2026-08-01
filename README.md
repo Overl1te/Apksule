@@ -4,7 +4,7 @@ Apksule — эксперимент для Windows: лёгкий runtime совм
 только на Rust. Это **не** эмулятор Android: нет виртуального устройства,
 образа системы, ADB и стороннего Android runtime.
 
-Этап M2 реализует конвейер запуска и минимальное исполнение DEX:
+Этап M3 реализует конвейер запуска, исполнение DEX и подмножество Android UI:
 
 1. открыть окно хоста Apksule (или сразу путь к APK);
 2. выбрать APK через нативный диалог Windows;
@@ -13,13 +13,14 @@ Apksule — эксперимент для Windows: лёгкий runtime совм
 5. создать изолированный контекст на пакет;
 6. открыть отдельное окно runtime с программной отрисовкой;
 7. разобрать `classes.dex` и исполнить lifecycle-методы Activity;
-8. передать события ввода к границе DEX;
-9. журналировать неподдерживаемые вызовы Android API soft-stub’ами.
+8. инфлейтить layout / `setContentView` и рисовать дерево View;
+9. доставить клики и ввод текста в View;
+10. журналировать неподдерживаемые вызовы Android API soft-stub’ами.
 
-M2 исполняет минимальный самогенерируемый APK вплоть до `Activity.onCreate`
-и soft-stub’ит `java.*` / `android.*`, чтобы реальные APK вроде Notally
-**не падали** на отсутствующих framework-методах. Это ещё **не** означает
-совместимость с UI Notally: View/`resources.arsc`/AndroidX — M3–M4.
+M3 исполняет самогенерируемый тестовый APK с UI (клик/текст) и soft-stub’ит
+`java.*` / `android.*`, чтобы реальные APK вроде Notally **не падали** на
+отсутствующих framework-методах. UI Notally (AndroidX/RecyclerView/Room) —
+этап M4.
 
 ## Архитектура
 
@@ -36,12 +37,13 @@ apksule-runtime ---------------------+
   lifecycle Activity                  |
   цикл событий winit                  v
   поверхность softbuffer/tiny-skia  apksule-compat
-  перевод ввода                     Context / Resources
-  трейт DexRuntime                  хранилище / заглушки GMS
+  перевод ввода                     Context / Resources / arsc
+  трейт DexRuntime                  View / UiHost / inflate
+  render View tree                  хранилище / заглушки GMS
         |                           журнал неподдержанных API
         v
   apksule-dex
-  парсер + интерпретатор DEX (M2)
+  парсер + интерпретатор DEX
 ```
 
 Лаунчер зависит от `apksule-apk` и `apksule-runtime`, но **не** импортирует
@@ -169,18 +171,17 @@ cargo run -p apksule -- $apk
 
 Ожидаемые значения inspection: пакет `com.omgodse.notally`, launcher activity
 `com.omgodse.notally.activities.MainActivity`, один DEX и скомпилированная
-таблица ресурсов. M2 пытается разобрать и запустить DEX, но останавливается на
-ещё не реализованной поверхности Android/AndroidX. Окно остаётся диагностикой
-runtime, а не UI Notally.
+таблица ресурсов. M3 soft-stub’ит framework и может показать ограниченный
+статус, но **UI Notally** ещё не реализован (M4).
 
-Минимальный критерий M2 проверяется без Android SDK:
+Критерий M3 проверяется без Android SDK:
 
 ```powershell
-cargo test -p apksule-runtime --test m2_minimal_apk
+cargo test -p apksule-runtime --test m3_minimal_apk
 ```
 
-Тест сам собирает APK в памяти, исполняет `Activity.onCreate` и проверяет
-side effect native bridge в песочнице.
+Тест сам собирает APK с `resources.arsc` + layout, исполняет `onCreate` /
+`setContentView`, проверяет отрисовку, клик и ввод текста.
 
 ## Хранилище и логи
 

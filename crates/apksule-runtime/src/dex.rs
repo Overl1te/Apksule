@@ -1,5 +1,8 @@
 use apksule_apk::ApkPackage;
-use apksule_compat::{Context, InputEvent};
+use apksule_compat::{
+    AndroidKeyCode, Context, InputEvent, KeyAction, MotionAction, Orientation, ResourceTable,
+    UiHost, ViewKind, build_minimal_layout_axml, inflate_axml, inflate_layout,
+};
 use apksule_dex::{
     DexFile, HeapRef, NativeBridge, NativeResult, ObjectRef, ResolvedMethod, Value, Vm, VmError,
 };
@@ -47,16 +50,18 @@ pub enum DexError {
     Runtime(String),
 }
 
-/// Stable seam for the M2 interpreter. The host never depends on this trait.
+/// Stable seam for the M3 interpreter. The host never depends on this trait.
 pub trait DexRuntime {
     fn load(&mut self, package: &ApkPackage, context: &Context) -> Result<(), DexError>;
     fn on_lifecycle(&mut self, state: ActivityState) -> Result<(), DexError>;
     fn on_input(&mut self, event: &InputEvent) -> Result<(), DexError>;
     fn on_surface_changed(&mut self, width: u32, height: u32) -> Result<(), DexError>;
     fn status(&self) -> &DexStatus;
+    fn ui_host(&self) -> Option<&UiHost> {
+        None
+    }
 }
 
-#[derive(Default)]
 pub struct InterpretingDexRuntime {
     status: DexStatus,
     vm: Option<Vm>,
@@ -64,12 +69,32 @@ pub struct InterpretingDexRuntime {
     activity_descriptor: Option<String>,
     activity_object: Option<ObjectRef>,
     input_events_seen: u64,
+    ui_host: UiHost,
+}
+
+impl Default for InterpretingDexRuntime {
+    fn default() -> Self {
+        Self {
+            status: DexStatus::default(),
+            vm: None,
+            context: None,
+            activity_descriptor: None,
+            activity_object: None,
+            input_events_seen: 0,
+            ui_host: UiHost::new(),
+        }
+    }
 }
 
 impl InterpretingDexRuntime {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[must_use]
+    pub fn ui(&self) -> &UiHost {
+        &self.ui_host
     }
 
     fn fail(
@@ -155,11 +180,37 @@ impl InterpretingDexRuntime {
             }
             Err(error) => {
                 // Lifecycle misses stay non-fatal: Notally and similar apps hit missing
-                // framework surfaces that M2 deliberately stubs.
+                // framework surfaces that M3 deliberately stubs.
                 self.degrade(&context, &activity, method, error.to_string())?;
             }
         }
         Ok(())
+    }
+
+    fn handle_key_down(&mut self, event: &apksule_compat::KeyEvent) {
+        if let Some(text) = event.text.as_deref() {
+            for ch in text.chars() {
+                let _ = self.ui_host.type_char(ch);
+            }
+            return;
+        }
+        match &event.key_code {
+            AndroidKeyCode::Character(value) => {
+                for ch in value.chars() {
+                    let _ = self.ui_host.type_char(ch);
+                }
+            }
+            AndroidKeyCode::Space => {
+                let _ = self.ui_host.type_char(' ');
+            }
+            AndroidKeyCode::Delete => {
+                let _ = self.ui_host.type_char('\u{8}');
+            }
+            AndroidKeyCode::Enter => {
+                let _ = self.ui_host.type_char('\n');
+            }
+            _ => {}
+        }
     }
 }
 
@@ -170,6 +221,7 @@ impl DexRuntime for InterpretingDexRuntime {
         self.context = Some(context.clone());
         self.activity_descriptor = None;
         self.activity_object = None;
+        self.ui_host = UiHost::new();
 
         let Some(entry) = package
             .resources
@@ -185,7 +237,7 @@ impl DexRuntime for InterpretingDexRuntime {
                 "dalvik.system.DexFile",
                 "multidex",
                 format!(
-                    "M2 исполняет только {entry}; файлов DEX: {}",
+                    "M3 исполняет только {entry}; файлов DEX: {}",
                     package.resources.dex_entries.len()
                 ),
             )?;
@@ -213,25 +265,37 @@ impl DexRuntime for InterpretingDexRuntime {
         }
 
         let class_count = dex.classes().len();
-        let mut vm = Vm::with_owned_native_bridge(dex, AndroidBridge::new(context.clone()));
+        let mut vm = Vm::with_owned_native_bridge(
+            dex,
+            AndroidBridge::new(context.clone(), self.ui_host.clone()),
+        );
         let object = match vm.allocate_object(&descriptor) {
             Ok(object) => object,
             Err(error) => return self.fail(context, "allocate", error.to_string()),
         };
         let receiver = Value::Reference(HeapRef::Object(object));
-        if vm.dex().find_method(&descriptor, "<init>", Some("()V")).is_some()
-            && let Err(error) = vm.invoke(&descriptor, "<init>", "()V", &[receiver])
-        {
-            return self.fail(context, "<init>", error.to_string());
-        }
+        let init_error = if vm.dex().find_method(&descriptor, "<init>", Some("()V")).is_some() {
+            vm.invoke(&descriptor, "<init>", "()V", &[receiver]).err()
+        } else {
+            None
+        };
 
         self.vm = Some(vm);
-        self.activity_descriptor = Some(descriptor);
+        self.activity_descriptor = Some(descriptor.clone());
         self.activity_object = Some(object);
         self.status = DexStatus::Ready {
             dex_files: package.resources.dex_entries.len(),
             classes: class_count,
         };
+        if let Some(error) = init_error {
+            // Framework-heavy Activity constructors must not abort the session.
+            return self.degrade(
+                context,
+                &descriptor_name(&descriptor),
+                "<init>",
+                error.to_string(),
+            );
+        }
         Ok(())
     }
 
@@ -247,12 +311,35 @@ impl DexRuntime for InterpretingDexRuntime {
         self.invoke_activity_method(state, method)
     }
 
-    fn on_input(&mut self, _event: &InputEvent) -> Result<(), DexError> {
+    fn on_input(&mut self, event: &InputEvent) -> Result<(), DexError> {
         self.input_events_seen = self.input_events_seen.saturating_add(1);
+        match event {
+            InputEvent::Motion(motion) if motion.action == MotionAction::Up => {
+                #[allow(clippy::cast_possible_truncation)]
+                let x = motion.x as i32;
+                #[allow(clippy::cast_possible_truncation)]
+                let y = motion.y as i32;
+                if let Some(marker) = self.ui_host.pointer_up(x, y) {
+                    let body = if marker.is_empty() {
+                        "clicked\n".to_owned()
+                    } else {
+                        format!("{marker}\n")
+                    };
+                    if let Some(context) = &self.context {
+                        context.storage().write_file("m3-click.txt", body.as_bytes())?;
+                    }
+                }
+            }
+            InputEvent::Key(key) if key.action == KeyAction::Down => {
+                self.handle_key_down(key);
+            }
+            _ => {}
+        }
         Ok(())
     }
 
     fn on_surface_changed(&mut self, width: u32, height: u32) -> Result<(), DexError> {
+        self.ui_host.set_surface_size(width, height);
         tracing::debug!(width, height, "APK surface resized");
         Ok(())
     }
@@ -260,18 +347,132 @@ impl DexRuntime for InterpretingDexRuntime {
     fn status(&self) -> &DexStatus {
         &self.status
     }
+
+    fn ui_host(&self) -> Option<&UiHost> {
+        Some(&self.ui_host)
+    }
 }
 
 #[derive(Debug, Clone)]
 struct AndroidBridge {
     context: Context,
+    ui_host: UiHost,
 }
 
 impl AndroidBridge {
     const MARKER_CLASS: &'static str = "Ldev/apksule/Bridge;";
 
-    const fn new(context: Context) -> Self {
-        Self { context }
+    fn new(context: Context, ui_host: UiHost) -> Self {
+        Self { context, ui_host }
+    }
+
+    fn install_main_layout(&mut self) -> Result<(), VmError> {
+        let root = self.resolve_main_layout()?;
+        self.ui_host.set_content_view(root);
+        for node in self.ui_host.snapshot() {
+            if matches!(node.kind, ViewKind::Button { .. }) {
+                self.ui_host.set_click_marker(node.id, "m3-clicked");
+            }
+        }
+        Ok(())
+    }
+
+    fn resolve_main_layout(&mut self) -> Result<apksule_compat::ViewId, VmError> {
+        let table = self
+            .context
+            .resources()
+            .load_compiled_table()
+            .ok()
+            .and_then(|bytes| ResourceTable::parse(&bytes).ok());
+
+        let layout_bytes = self
+            .context
+            .resources()
+            .load_entry("res/layout/main.xml")
+            .or_else(|_| self.context.resources().load_raw_resource("layout/main.xml"));
+
+        match (table.as_ref(), layout_bytes) {
+            (Some(table), Ok(bytes)) => {
+                if let Some(layout_id) = table.resource_id("layout", "main") {
+                    inflate_layout(&self.ui_host, table, layout_id, &bytes)
+                        .map_err(|error| VmError::NativeBridge(error.to_string()))
+                } else {
+                    inflate_axml(&self.ui_host, &bytes)
+                        .map_err(|error| VmError::NativeBridge(error.to_string()))
+                }
+            }
+            (None, Ok(bytes)) => inflate_axml(&self.ui_host, &bytes)
+                .map_err(|error| VmError::NativeBridge(error.to_string())),
+            _ => {
+                let axml = build_minimal_layout_axml("Apksule M3", "Save");
+                inflate_axml(&self.ui_host, &axml)
+                    .map_err(|error| VmError::NativeBridge(error.to_string()))
+            }
+        }
+    }
+
+    fn handle_view_method(
+        &mut self,
+        method: &ResolvedMethod,
+        arguments: &[Value],
+    ) -> Option<NativeResult> {
+        if !is_view_class(&method.class_descriptor) {
+            return None;
+        }
+
+        match method.name.as_str() {
+            "<init>" => {
+                if let Some(object_id) = arguments.first().and_then(value_object_id) {
+                    let kind = view_kind_for_descriptor(&method.class_descriptor);
+                    let view = self.ui_host.create_view(kind);
+                    self.ui_host.bind_object(object_id, view);
+                }
+                Some(NativeResult::Handled(Value::Null))
+            }
+            "addView" => {
+                let parent = arguments.first().and_then(value_object_id);
+                let child = arguments.get(1).and_then(value_object_id);
+                if let (Some(parent), Some(child)) = (parent, child)
+                    && let (Some(parent_view), Some(child_view)) = (
+                        self.ui_host.view_for_object(parent),
+                        self.ui_host.view_for_object(child),
+                    )
+                {
+                    self.ui_host.add_child(parent_view, child_view);
+                }
+                Some(NativeResult::Handled(Value::Null))
+            }
+            "setText" => {
+                if let Some(object_id) = arguments.first().and_then(value_object_id)
+                    && let Some(view) = self.ui_host.view_for_object(object_id)
+                {
+                    if let Some(Value::Int(resource_id)) = arguments.get(1)
+                        && let Ok(bytes) = self.context.resources().load_compiled_table()
+                        && let Ok(table) = ResourceTable::parse(&bytes)
+                        && let Some(text) =
+                            table.resolve_string_id((*resource_id).cast_unsigned())
+                    {
+                        self.ui_host.set_text(view, text);
+                    } else if matches!(arguments.get(1), Some(Value::Null)) {
+                        self.ui_host.set_text(view, "");
+                    }
+                }
+                Some(NativeResult::Handled(Value::Null))
+            }
+            "setOnClickListener" => {
+                if let Some(object_id) = arguments.first().and_then(value_object_id)
+                    && let Some(view) = self.ui_host.view_for_object(object_id)
+                {
+                    let has_listener =
+                        arguments.get(1).is_some_and(|value| !matches!(value, Value::Null));
+                    if has_listener {
+                        self.ui_host.set_click_marker(view, "m3-clicked");
+                    }
+                }
+                Some(NativeResult::Handled(Value::Null))
+            }
+            _ => None,
+        }
     }
 }
 
@@ -281,12 +482,21 @@ impl NativeBridge for AndroidBridge {
         method: &ResolvedMethod,
         arguments: &[Value],
     ) -> Result<NativeResult, VmError> {
-        if method.class_descriptor == Self::MARKER_CLASS && method.name == "markReached" {
-            self.context
-                .storage()
-                .write_file("m2-on-create.txt", b"Activity.onCreate reached\n")
-                .map_err(|error| VmError::NativeBridge(error.to_string()))?;
-            return Ok(NativeResult::Handled(Value::Null));
+        if method.class_descriptor == Self::MARKER_CLASS {
+            match method.name.as_str() {
+                "markReached" => {
+                    self.context
+                        .storage()
+                        .write_file("m3-on-create.txt", b"Activity.onCreate reached\n")
+                        .map_err(|error| VmError::NativeBridge(error.to_string()))?;
+                    return Ok(NativeResult::Handled(Value::Null));
+                }
+                "setContentView" | "installUi" => {
+                    self.install_main_layout()?;
+                    return Ok(NativeResult::Handled(Value::Null));
+                }
+                _ => {}
+            }
         }
 
         if method.class_descriptor == "Ljava/lang/Object;" {
@@ -299,12 +509,24 @@ impl NativeBridge for AndroidBridge {
             return Ok(NativeResult::Handled(value));
         }
 
+        if method.name == "setContentView"
+            && (method.prototype.starts_with("(I)")
+                || method.prototype.contains("Landroid/view/View;"))
+        {
+            self.install_main_layout()?;
+            return Ok(NativeResult::Handled(Value::Null));
+        }
+
+        if let Some(result) = self.handle_view_method(method, arguments) {
+            return Ok(result);
+        }
+
         if is_soft_stub_class(&method.class_descriptor) {
             self.context
                 .unsupported_api(
                     method.class_descriptor.clone(),
                     method.name.clone(),
-                    format!("M2 fallback для {}", method.prototype),
+                    format!("M3 fallback для {}", method.prototype),
                 )
                 .map_err(|error| VmError::NativeBridge(error.to_string()))?;
             return Ok(NativeResult::Handled(default_return_value(&method.prototype)));
@@ -312,6 +534,42 @@ impl NativeBridge for AndroidBridge {
 
         // Unknown APK-local natives still fail hard; standard/Java/Android never do.
         Ok(NativeResult::Unresolved)
+    }
+}
+
+fn value_object_id(value: &Value) -> Option<u32> {
+    match value {
+        Value::Reference(HeapRef::Object(ObjectRef(id))) => Some(*id),
+        _ => None,
+    }
+}
+
+fn is_view_class(descriptor: &str) -> bool {
+    matches!(
+        descriptor,
+        "Landroid/view/View;"
+            | "Landroid/view/ViewGroup;"
+            | "Landroid/widget/TextView;"
+            | "Landroid/widget/EditText;"
+            | "Landroid/widget/Button;"
+            | "Landroid/widget/LinearLayout;"
+            | "Landroid/widget/FrameLayout;"
+    )
+}
+
+fn view_kind_for_descriptor(descriptor: &str) -> ViewKind {
+    match descriptor {
+        "Landroid/widget/Button;" => ViewKind::Button { text: String::new() },
+        "Landroid/widget/EditText;" => ViewKind::EditText { text: String::new() },
+        "Landroid/widget/TextView;" => ViewKind::TextView { text: String::new() },
+        "Landroid/widget/FrameLayout;" | "Landroid/view/ViewGroup;" => {
+            ViewKind::FrameLayout { children: Vec::new() }
+        }
+        "Landroid/widget/LinearLayout;" => ViewKind::LinearLayout {
+            orientation: Orientation::Vertical,
+            children: Vec::new(),
+        },
+        _ => ViewKind::View,
     }
 }
 

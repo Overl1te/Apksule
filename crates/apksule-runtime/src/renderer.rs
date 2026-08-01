@@ -1,6 +1,7 @@
 #![allow(clippy::cast_precision_loss)]
 
 use apksule_apk::ApkPackage;
+use apksule_compat::{UiHost, ViewKind, Visibility};
 use thiserror::Error;
 use tiny_skia::{Color, Paint, Pixmap, Rect, Transform};
 
@@ -30,7 +31,7 @@ pub fn render_launch_surface(
     let mut y = 34.0;
     draw_text(&mut pixmap, "APKSULE", margin, y, 4.0, (72, 201, 176, 255));
     y += 48.0;
-    draw_text(&mut pixmap, "СРЕДА СОВМЕСТИМОСТИ M2", margin, y, 2.0, (150, 164, 184, 255));
+    draw_text(&mut pixmap, "СРЕДА СОВМЕСТИМОСТИ M3", margin, y, 2.0, (150, 164, 184, 255));
     y += 42.0;
 
     let mut panel = Paint::default();
@@ -92,7 +93,7 @@ pub fn render_launch_surface(
     if height > 50 {
         draw_text(
             &mut pixmap,
-            "M2: ИСПОЛНЕНИЕ DEX. ИНТЕРФЕЙС APK БУДЕТ В M3",
+            "M3: UI APK. NOTALLY — M4",
             margin,
             height as f32 - 34.0,
             2.0,
@@ -100,20 +101,107 @@ pub fn render_launch_surface(
         );
     }
 
-    Ok(pixmap
+    Ok(pixmap_to_rgb(&pixmap))
+}
+
+/// Draw the inflated View tree on a light surface (M3 content path).
+pub fn render_view_surface(
+    host: &UiHost,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u32>, RenderError> {
+    let mut pixmap =
+        Pixmap::new(width, height).ok_or(RenderError::InvalidDimensions { width, height })?;
+    pixmap.fill(Color::from_rgba8(236, 239, 244, 255));
+
+    for node in host.snapshot() {
+        if node.visibility != Visibility::Visible {
+            continue;
+        }
+        let left = node.bounds.left as f32;
+        let top = node.bounds.top as f32;
+        let w = node.bounds.width().max(0) as f32;
+        let h = node.bounds.height().max(0) as f32;
+        if w <= 0.0 || h <= 0.0 {
+            continue;
+        }
+
+        match &node.kind {
+            ViewKind::Button { text } => {
+                let mut panel = Paint::default();
+                panel.set_color_rgba8(72, 201, 176, 255);
+                fill_rect(&mut pixmap, left, top, w, h, &panel);
+                draw_text(
+                    &mut pixmap,
+                    text,
+                    left + 12.0,
+                    top + (h * 0.35).max(4.0),
+                    2.0,
+                    (13, 18, 28, 255),
+                );
+            }
+            ViewKind::EditText { text } => {
+                let mut panel = Paint::default();
+                panel.set_color_rgba8(255, 255, 255, 255);
+                fill_rect(&mut pixmap, left, top, w, h, &panel);
+                let mut border = Paint::default();
+                border.set_color_rgba8(150, 164, 184, 255);
+                fill_rect(&mut pixmap, left, top, w, 1.0, &border);
+                fill_rect(&mut pixmap, left, top + h - 1.0, w, 1.0, &border);
+                fill_rect(&mut pixmap, left, top, 1.0, h, &border);
+                fill_rect(&mut pixmap, left + w - 1.0, top, 1.0, h, &border);
+                let shown = if text.is_empty() { "|" } else { text.as_str() };
+                draw_text(
+                    &mut pixmap,
+                    shown,
+                    left + 8.0,
+                    top + (h * 0.3).max(4.0),
+                    2.0,
+                    (40, 48, 64, 255),
+                );
+            }
+            ViewKind::TextView { text } => {
+                let mut panel = Paint::default();
+                panel.set_color_rgba8(245, 247, 250, 255);
+                fill_rect(&mut pixmap, left, top, w, h, &panel);
+                draw_text(
+                    &mut pixmap,
+                    text,
+                    left + 8.0,
+                    top + (h * 0.3).max(4.0),
+                    2.0,
+                    (40, 48, 64, 255),
+                );
+            }
+            ViewKind::LinearLayout { .. } | ViewKind::FrameLayout { .. } | ViewKind::View => {}
+        }
+    }
+
+    Ok(pixmap_to_rgb(&pixmap))
+}
+
+fn pixmap_to_rgb(pixmap: &Pixmap) -> Vec<u32> {
+    pixmap
         .data()
         .chunks_exact(4)
         .map(|pixel| (u32::from(pixel[0]) << 16) | (u32::from(pixel[1]) << 8) | u32::from(pixel[2]))
-        .collect())
+        .collect()
 }
 
-fn fill_rect(pixmap: &mut Pixmap, x: f32, y: f32, width: f32, height: f32, paint: &Paint<'_>) {
+pub(crate) fn fill_rect(
+    pixmap: &mut Pixmap,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    paint: &Paint<'_>,
+) {
     if let Some(rect) = Rect::from_xywh(x, y, width, height) {
         pixmap.fill_rect(rect, paint, Transform::identity(), None);
     }
 }
 
-fn draw_text(
+pub(crate) fn draw_text(
     pixmap: &mut Pixmap,
     text: &str,
     start_x: f32,
@@ -222,11 +310,12 @@ fn glyph(character: char) -> [u8; 7] {
         '9' => [0b01110,0b10001,0b10001,0b01111,0b00001,0b00001,0b01110],
         '.' => [0,0,0,0,0,0b00110,0b00110],
         ':' => [0,0b00110,0b00110,0,0b00110,0b00110,0],
-        '-' => [0,0,0,0b11111,0,0,0],
+        '-' | '—' | '–' => [0,0,0,0b11111,0,0,0],
         '_' => [0,0,0,0,0,0,0b11111],
         '/' => [0b00001,0b00010,0b00010,0b00100,0b01000,0b01000,0b10000],
         '(' => [0b00010,0b00100,0b01000,0b01000,0b01000,0b00100,0b00010],
         ')' => [0b01000,0b00100,0b00010,0b00010,0b00010,0b00100,0b01000],
+        '|' => [0b00100,0b00100,0b00100,0b00100,0b00100,0b00100,0b00100],
         ' ' => [0; 7],
         _ => [0b01110,0b10001,0b00010,0b00100,0b00100,0,0b00100],
     }
@@ -241,7 +330,8 @@ mod tests {
         let unknown = glyph('?');
         let text = "СРЕДА СОВМЕСТИМОСТИ ПАКЕТ ВЕРСИЯ ФАЙЛЫ РАЗРЕШЕНИЯ \
                     ТАБЛИЦА РЕСУРСОВ ЕСТЬ НЕТ СТАТУС ЗАГРУЖЕН ГОТОВО \
-                    КЛАССОВ ВЫПОЛНЕНО ОШИБКА ЗАГЛУШКА ИНТЕРФЕЙС БУДЕТ ОГРАНИЧЕННО";
+                    КЛАССОВ ВЫПОЛНЕНО ОШИБКА ЗАГЛУШКА ИНТЕРФЕЙС БУДЕТ ОГРАНИЧЕННО \
+                    M3 UI APK NOTALLY M4";
 
         for character in text.chars().filter(|character| !character.is_whitespace()) {
             assert_ne!(glyph(character), unknown, "нет глифа для {character}");

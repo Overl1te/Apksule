@@ -14,7 +14,7 @@ use winit::window::{Window, WindowId};
 use crate::dex::{DexError, DexRuntime, InterpretingDexRuntime};
 use crate::input::InputTranslator;
 use crate::lifecycle::{ActivityLifecycle, ActivityState, LifecycleError};
-use crate::renderer::{RenderError, render_launch_surface};
+use crate::renderer::{RenderError, render_launch_surface, render_view_surface};
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
@@ -200,8 +200,12 @@ impl RuntimeApplication {
         else {
             return Ok(());
         };
-        let frame =
-            render_launch_surface(&self.package, self.vm.status(), size.width, size.height)?;
+        let frame = match self.vm.ui_host() {
+            Some(host) if host.has_content() => {
+                render_view_surface(host, size.width, size.height)?
+            }
+            _ => render_launch_surface(&self.package, self.vm.status(), size.width, size.height)?,
+        };
         let surface = self.surface.as_mut().ok_or_else(|| {
             RuntimeError::Surface("redraw requested without an active surface".to_owned())
         })?;

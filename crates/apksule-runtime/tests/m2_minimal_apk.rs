@@ -73,7 +73,7 @@ fn m2_runtime_executes_activity_on_create_through_native_bridge() {
         DexStatus::Running { method, .. } if method == "onCreate()"
     ));
     assert_eq!(
-        context.storage().read_file("m2-on-create.txt").expect("маркер bridge"),
+        context.storage().read_file("m3-on-create.txt").expect("маркер bridge"),
         b"Activity.onCreate reached\n"
     );
     let _ = std::fs::remove_dir_all(storage_base);

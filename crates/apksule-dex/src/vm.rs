@@ -358,6 +358,28 @@ impl Vm {
         self.allocate_object_type(class.class_idx)
     }
 
+    /// Allocate an object for a type descriptor even when the class has no DEX definition
+    /// (framework stubs such as `Landroid/os/Looper;`).
+    pub fn allocate_typed_object(&mut self, type_descriptor: &str) -> Result<ObjectRef, VmError> {
+        if self.dex.find_class(type_descriptor).is_some() {
+            return self.allocate_object(type_descriptor);
+        }
+        let type_idx = self.find_type_idx(type_descriptor)?;
+        self.allocate_object_type(type_idx)
+    }
+
+    fn find_type_idx(&self, type_descriptor: &str) -> Result<u32, VmError> {
+        self.dex
+            .types()
+            .iter()
+            .enumerate()
+            .find_map(|(index, _)| {
+                let index = u32::try_from(index).ok()?;
+                (self.dex.type_descriptor(index).ok()? == type_descriptor).then_some(index)
+            })
+            .ok_or(VmError::TypeMismatch("type descriptor is absent from this DEX"))
+    }
+
     pub fn allocate_array(
         &mut self,
         type_descriptor: &str,
@@ -847,8 +869,37 @@ impl Vm {
             NativeResult::Unresolved
         };
         match result {
-            NativeResult::Handled(value) => Ok(value),
+            NativeResult::Handled(value) => {
+                Ok(self.materialize_soft_object_return(&resolved.prototype, value))
+            }
             NativeResult::Unresolved => Err(VmError::UnresolvedNative(resolved)),
+        }
+    }
+
+    /// Soft/native stubs often return Null for object types. Materialize an opaque
+    /// instance so callers do not immediately NPE on monitor-enter / iget.
+    fn materialize_soft_object_return(&mut self, prototype: &str, value: Value) -> Value {
+        if !matches!(value, Value::Null) {
+            return value;
+        }
+        let Some(return_type) = prototype.rsplit_once(')').map(|(_, result)| result) else {
+            return value;
+        };
+        match return_type.as_bytes().first() {
+            Some(b'L') => {
+                if let Ok(object) = self.allocate_typed_object(return_type) {
+                    Value::Reference(HeapRef::Object(object))
+                } else if let Ok(object) = self.allocate_typed_object("Ljava/lang/Object;") {
+                    Value::Reference(HeapRef::Object(object))
+                } else {
+                    Value::Null
+                }
+            }
+            Some(b'[') => match self.allocate_array(return_type, 0) {
+                Ok(array) => Value::Reference(HeapRef::Array(array)),
+                Err(_) => Value::Null,
+            },
+            _ => value,
         }
     }
 

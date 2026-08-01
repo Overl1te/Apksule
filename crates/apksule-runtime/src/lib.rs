@@ -8,4 +8,6 @@ mod runtime;
 
 pub use dex::{DexError, DexRuntime, DexStatus, InterpretingDexRuntime, StubDexRuntime};
 pub use lifecycle::{ActivityLifecycle, ActivityState, LifecycleError};
+pub use renderer::{RenderError, render_launch_surface, render_view_surface};
 pub use runtime::{Runtime, RuntimeError};
+

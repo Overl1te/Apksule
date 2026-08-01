@@ -130,6 +130,142 @@ pub fn minimal_activity_dex() -> Vec<u8> {
     bytes
 }
 
+/// M3 Activity: `onCreate` calls `Bridge.markReached` then `Bridge.setContentView`.
+pub fn minimal_m3_activity_dex() -> Vec<u8> {
+    let strings = [
+        "Ldev/apksule/Bridge;",
+        "Ldev/apksule/m3/MainActivity;",
+        "Ljava/lang/Object;",
+        "V",
+        "markReached",
+        "setContentView",
+        "onCreate",
+    ];
+
+    let string_ids_off = HEADER_SIZE;
+    let type_ids_off = string_ids_off + strings.len() * 4;
+    let proto_ids_off = type_ids_off + 4 * 4;
+    let method_ids_off = proto_ids_off + 12;
+    let class_defs_off = method_ids_off + 3 * 8;
+    let data_off = class_defs_off + 32;
+
+    let mut data = Vec::new();
+    let mut string_offsets = Vec::new();
+    for value in strings {
+        string_offsets.push(u32_at(data_off + data.len()));
+        push_uleb128(&mut data, u32::try_from(value.encode_utf16().count()).expect("string size"));
+        data.extend_from_slice(value.as_bytes());
+        data.push(0);
+    }
+    align4(&mut data);
+
+    let code_off = u32_at(data_off + data.len());
+    push_u16(&mut data, 1); // registers_size
+    push_u16(&mut data, 1); // ins_size
+    push_u16(&mut data, 0); // outs_size
+    push_u16(&mut data, 0); // tries_size
+    push_u32(&mut data, 0); // debug_info_off
+    push_u32(&mut data, 7); // insns_size
+    push_u16(&mut data, 0x0071); // invoke-static {}, method@0 markReached
+    push_u16(&mut data, 0);
+    push_u16(&mut data, 0);
+    push_u16(&mut data, 0x0071); // invoke-static {}, method@1 setContentView
+    push_u16(&mut data, 1);
+    push_u16(&mut data, 0);
+    push_u16(&mut data, 0x000e); // return-void
+
+    let class_data_off = u32_at(data_off + data.len());
+    push_uleb128(&mut data, 0);
+    push_uleb128(&mut data, 0);
+    push_uleb128(&mut data, 0);
+    push_uleb128(&mut data, 1); // virtual_methods_size
+    push_uleb128(&mut data, 2); // method_idx_diff => onCreate @2
+    push_uleb128(&mut data, 1); // public
+    push_uleb128(&mut data, code_off);
+    align4(&mut data);
+
+    let map_off = u32_at(data_off + data.len());
+    let map_entries = [
+        (0x0000, 1, 0),
+        (0x0001, u32::try_from(strings.len()).expect("string count"), u32_at(string_ids_off)),
+        (0x0002, 4, u32_at(type_ids_off)),
+        (0x0003, 1, u32_at(proto_ids_off)),
+        (0x0005, 3, u32_at(method_ids_off)),
+        (0x0006, 1, u32_at(class_defs_off)),
+        (0x2002, u32::try_from(strings.len()).expect("string count"), u32_at(data_off)),
+        (0x2001, 1, code_off),
+        (0x2000, 1, class_data_off),
+        (0x1000, 1, map_off),
+    ];
+    push_u32(&mut data, u32::try_from(map_entries.len()).expect("map count"));
+    for (item_type, size, offset) in map_entries {
+        push_u16(&mut data, item_type);
+        push_u16(&mut data, 0);
+        push_u32(&mut data, size);
+        push_u32(&mut data, offset);
+    }
+
+    let file_size = data_off + data.len();
+    let mut bytes = vec![0; data_off];
+    bytes.extend_from_slice(&data);
+
+    bytes[0..8].copy_from_slice(b"dex\n035\0");
+    write_u32(&mut bytes, 32, u32_at(file_size));
+    write_u32(&mut bytes, 36, u32_at(HEADER_SIZE));
+    write_u32(&mut bytes, 40, 0x1234_5678);
+    write_u32(&mut bytes, 52, map_off);
+    write_u32(&mut bytes, 56, u32::try_from(strings.len()).expect("string count"));
+    write_u32(&mut bytes, 60, u32_at(string_ids_off));
+    write_u32(&mut bytes, 64, 4);
+    write_u32(&mut bytes, 68, u32_at(type_ids_off));
+    write_u32(&mut bytes, 72, 1);
+    write_u32(&mut bytes, 76, u32_at(proto_ids_off));
+    write_u32(&mut bytes, 80, 0);
+    write_u32(&mut bytes, 84, 0);
+    write_u32(&mut bytes, 88, 3);
+    write_u32(&mut bytes, 92, u32_at(method_ids_off));
+    write_u32(&mut bytes, 96, 1);
+    write_u32(&mut bytes, 100, u32_at(class_defs_off));
+    write_u32(&mut bytes, 104, u32_at(file_size - data_off));
+    write_u32(&mut bytes, 108, u32_at(data_off));
+
+    for (index, offset) in string_offsets.into_iter().enumerate() {
+        write_u32(&mut bytes, string_ids_off + index * 4, offset);
+    }
+    for (index, descriptor_idx) in [0_u32, 1, 2, 3].into_iter().enumerate() {
+        write_u32(&mut bytes, type_ids_off + index * 4, descriptor_idx);
+    }
+
+    write_u32(&mut bytes, proto_ids_off, 3);
+    write_u32(&mut bytes, proto_ids_off + 4, 3);
+    write_u32(&mut bytes, proto_ids_off + 8, 0);
+
+    write_u16(&mut bytes, method_ids_off, 0); // Bridge.markReached
+    write_u16(&mut bytes, method_ids_off + 2, 0);
+    write_u32(&mut bytes, method_ids_off + 4, 4);
+    write_u16(&mut bytes, method_ids_off + 8, 0); // Bridge.setContentView
+    write_u16(&mut bytes, method_ids_off + 10, 0);
+    write_u32(&mut bytes, method_ids_off + 12, 5);
+    write_u16(&mut bytes, method_ids_off + 16, 1); // MainActivity.onCreate
+    write_u16(&mut bytes, method_ids_off + 18, 0);
+    write_u32(&mut bytes, method_ids_off + 20, 6);
+
+    write_u32(&mut bytes, class_defs_off, 1);
+    write_u32(&mut bytes, class_defs_off + 4, 1);
+    write_u32(&mut bytes, class_defs_off + 8, 2);
+    write_u32(&mut bytes, class_defs_off + 12, 0);
+    write_u32(&mut bytes, class_defs_off + 16, u32::MAX);
+    write_u32(&mut bytes, class_defs_off + 20, 0);
+    write_u32(&mut bytes, class_defs_off + 24, class_data_off);
+    write_u32(&mut bytes, class_defs_off + 28, 0);
+
+    let signature = sha1(&bytes[32..]);
+    bytes[12..32].copy_from_slice(&signature);
+    let checksum = adler32(&bytes[12..]);
+    write_u32(&mut bytes, 8, checksum);
+    bytes
+}
+
 fn align4(bytes: &mut Vec<u8>) {
     while !bytes.len().is_multiple_of(4) {
         bytes.push(0);
