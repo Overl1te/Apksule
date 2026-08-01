@@ -19,6 +19,11 @@ pub enum DexStatus {
         activity: String,
         method: String,
     },
+    /// Lifecycle reached, but some framework calls were stubbed or truncated.
+    Degraded {
+        activity: String,
+        reason: String,
+    },
     Failed {
         reason: String,
     },
@@ -80,6 +85,20 @@ impl InterpretingDexRuntime {
         Ok(())
     }
 
+    fn degrade(
+        &mut self,
+        context: &Context,
+        activity: &str,
+        operation: &str,
+        reason: impl Into<String>,
+    ) -> Result<(), DexError> {
+        let reason = reason.into();
+        tracing::warn!(%reason, %operation, activity, "DEX lifecycle limited by missing APIs");
+        self.status = DexStatus::Degraded { activity: activity.to_owned(), reason: reason.clone() };
+        context.unsupported_api("dalvik.system.DexFile", operation, reason)?;
+        Ok(())
+    }
+
     fn invoke_activity_method(
         &mut self,
         state: ActivityState,
@@ -90,6 +109,7 @@ impl InterpretingDexRuntime {
         else {
             return Ok(());
         };
+        let activity = descriptor_name(&descriptor);
 
         let prototype = self.vm.as_ref().and_then(|vm| {
             let dex = vm.dex();
@@ -105,10 +125,11 @@ impl InterpretingDexRuntime {
         });
         let Some(prototype) = prototype else {
             if state == ActivityState::Created {
-                self.fail(
+                self.degrade(
                     &context,
+                    &activity,
                     method,
-                    format!("{descriptor}->{method}(Landroid/os/Bundle;)V не найден"),
+                    format!("{descriptor}->{method} не найден; lifecycle продолжен ограниченно"),
                 )?;
             }
             return Ok(());
@@ -124,14 +145,18 @@ impl InterpretingDexRuntime {
             .invoke(&descriptor, method, prototype, &arguments);
         match result {
             Ok(_) => {
-                self.status = DexStatus::Running {
-                    activity: descriptor_name(&descriptor),
-                    method: format!("{method}()"),
-                };
+                if !matches!(self.status, DexStatus::Degraded { .. }) {
+                    self.status = DexStatus::Running {
+                        activity: activity.clone(),
+                        method: format!("{method}()"),
+                    };
+                }
                 tracing::info!(activity = %descriptor, %method, ?state, "DEX method executed");
             }
             Err(error) => {
-                self.fail(&context, method, error.to_string())?;
+                // Lifecycle misses stay non-fatal: Notally and similar apps hit missing
+                // framework surfaces that M2 deliberately stubs.
+                self.degrade(&context, &activity, method, error.to_string())?;
             }
         }
         Ok(())
@@ -274,10 +299,7 @@ impl NativeBridge for AndroidBridge {
             return Ok(NativeResult::Handled(value));
         }
 
-        if method.class_descriptor == "Ljava/lang/String;"
-            || method.class_descriptor.starts_with("Ljava/util/")
-            || is_framework_class(&method.class_descriptor)
-        {
+        if is_soft_stub_class(&method.class_descriptor) {
             self.context
                 .unsupported_api(
                     method.class_descriptor.clone(),
@@ -288,15 +310,22 @@ impl NativeBridge for AndroidBridge {
             return Ok(NativeResult::Handled(default_return_value(&method.prototype)));
         }
 
+        // Unknown APK-local natives still fail hard; standard/Java/Android never do.
         Ok(NativeResult::Unresolved)
     }
 }
 
-fn is_framework_class(descriptor: &str) -> bool {
-    descriptor.starts_with("Landroid/")
+fn is_soft_stub_class(descriptor: &str) -> bool {
+    descriptor.starts_with("Ljava/")
+        || descriptor.starts_with("Landroid/")
         || descriptor.starts_with("Landroidx/")
         || descriptor.starts_with("Ljavax/")
         || descriptor.starts_with("Lkotlin/")
+        || descriptor.starts_with("Ldalvik/")
+        || descriptor.starts_with("Llibcore/")
+        || descriptor.starts_with("Lsun/")
+        || descriptor.starts_with("Lcom/android/")
+        || descriptor.starts_with("Lcom/google/")
 }
 
 fn default_return_value(prototype: &str) -> Value {
@@ -385,7 +414,7 @@ impl DexRuntime for StubDexRuntime {
 
 #[cfg(test)]
 mod tests {
-    use super::{activity_descriptor, default_return_value, descriptor_name};
+    use super::{activity_descriptor, default_return_value, descriptor_name, is_soft_stub_class};
     use apksule_dex::Value;
 
     #[test]
@@ -407,5 +436,13 @@ mod tests {
         assert_eq!(default_return_value("()J"), Value::Long(0));
         assert_eq!(default_return_value("()Ljava/lang/String;"), Value::Null);
         assert_eq!(default_return_value("()V"), Value::Null);
+    }
+
+    #[test]
+    fn soft_stubs_cover_weak_reference_and_java_lang() {
+        assert!(is_soft_stub_class("Ljava/lang/ref/WeakReference;"));
+        assert!(is_soft_stub_class("Ljava/util/concurrent/atomic/AtomicReference;"));
+        assert!(is_soft_stub_class("Landroid/app/Activity;"));
+        assert!(!is_soft_stub_class("Lcom/omgodse/notally/activities/MainActivity;"));
     }
 }

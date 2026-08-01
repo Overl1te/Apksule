@@ -6,25 +6,26 @@ Apksule — эксперимент для Windows: лёгкий runtime совм
 
 Этап M2 реализует конвейер запуска и минимальное исполнение DEX:
 
-1. выбрать APK через нативный диалог Windows;
-2. просмотреть ZIP без распаковки;
-3. декодировать бинарный `AndroidManifest.xml`;
-4. создать изолированный контекст на пакет;
-5. открыть отдельное окно с программной отрисовкой;
-6. разобрать `classes.dex` и исполнить lifecycle-методы Activity;
-7. передать события ввода к границе DEX;
-8. журналировать неподдерживаемые вызовы Android API.
+1. открыть окно хоста Apksule (или сразу путь к APK);
+2. выбрать APK через нативный диалог Windows;
+3. просмотреть ZIP без распаковки;
+4. декодировать бинарный `AndroidManifest.xml`;
+5. создать изолированный контекст на пакет;
+6. открыть отдельное окно runtime с программной отрисовкой;
+7. разобрать `classes.dex` и исполнить lifecycle-методы Activity;
+8. передать события ввода к границе DEX;
+9. журналировать неподдерживаемые вызовы Android API soft-stub’ами.
 
-M2 исполняет минимальный самогенерируемый APK вплоть до `Activity.onCreate`.
-Это ещё **не** означает совместимость с Notally: Android UI, `resources.arsc`,
-AndroidX/Material и Room входят в M3–M4. Поэтому настоящий интерфейс Notally
-пока не рисуется.
+M2 исполняет минимальный самогенерируемый APK вплоть до `Activity.onCreate`
+и soft-stub’ит `java.*` / `android.*`, чтобы реальные APK вроде Notally
+**не падали** на отсутствующих framework-методах. Это ещё **не** означает
+совместимость с UI Notally: View/`resources.arsc`/AndroidX — M3–M4.
 
 ## Архитектура
 
 ```text
 apksule.exe
-  нативный выбор файла
+  окно хоста (APK + настройки)
         |
         v
 apksule-apk
@@ -45,11 +46,12 @@ apksule-runtime ---------------------+
 
 Лаунчер зависит от `apksule-apk` и `apksule-runtime`, но **не** импортирует
 crate совместимости напрямую. Android-подобные API отделены от логики хоста.
-Окно цели принадлежит runtime; у лаунчера нет дашборда, настроек и оболочки.
+Окно runtime принадлежит целевому APK; настройки Apksule живут в отдельном
+окне хоста (`%APPDATA%\Apksule\settings.json`).
 
 ## Workspace
 
-- `crates/apksule` — единственный executable: выбор файла и запуск.
+- `crates/apksule` — единственный executable: окно хоста, настройки, запуск.
 - `crates/apksule-apk` — индекс ZIP APK, парсер AXML, загрузка сырых entry.
 - `crates/apksule-dex` — безопасный парсер DEX и регистровый интерпретатор.
 - `crates/apksule-runtime` — окно, рендер, lifecycle, ввод, граница DEX.
@@ -70,12 +72,16 @@ cargo build --release
 cargo run -p apksule
 ```
 
-Без аргументов открывается нативный выбор APK. Для повторяемых тестов:
+Без аргументов открывается **окно хоста** (открыть APK, автообновление,
+проверка обновлений, папка логов) — не консоль. Для повторяемых тестов:
 
 ```powershell
 cargo run -p apksule -- "C:\path\to\application.apk"
 cargo run -p apksule -- --inspect "C:\path\to\application.apk"
 ```
+
+Настройки хоста: `%APPDATA%\Apksule\settings.json` (в т.ч. `auto_update`).
+Лог хоста: `%APPDATA%\Apksule\logs\host.log`.
 
 Release-сборка: `target\release\apksule.exe`.
 
@@ -207,6 +213,8 @@ side effect native bridge в песочнице.
 - регистровая VM: базовые опкоды, invoke, объекты/массивы, поля и исключения
 - class loading, `<clinit>`, наследование, virtual dispatch и лимиты VM
 - запуск `Activity.onCreate` минимального APK через native/framework bridge
+- soft-stub `java.*` / `android.*` / `androidx.*` без фатального падения lifecycle
+- окно хоста с настройками автообновления (`settings.json`)
 
 Android UI для отрисовки интерфейса самого APK — следующий этап в
 [ROADMAP.md](ROADMAP.md).

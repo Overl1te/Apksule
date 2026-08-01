@@ -1,3 +1,8 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
+mod console_win;
+mod host_ui;
+mod settings;
 mod update;
 
 use std::error::Error;
@@ -7,25 +12,24 @@ use apksule_apk::{ApkLoader, ApkPackage};
 use apksule_runtime::Runtime;
 use tracing_subscriber::EnvFilter;
 
+use crate::host_ui::run_host_shell;
+use crate::settings::HostSettings;
 use crate::update::{UpdateOutcome, check_and_update, check_for_update, current_version};
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let options = Options::from_args()?;
+    if options.command.needs_console() {
+        console_win::ensure_cli_console();
+    }
     init_logging();
 
-    let options = Options::from_args()?;
     maybe_auto_update(&options);
 
     match options.command {
-        Command::Pick => {
-            let Some(path) = rfd::FileDialog::new()
-                .set_title("Choose an Android APK")
-                .add_filter("Android package", &["apk"])
-                .pick_file()
-            else {
-                tracing::info!("APK selection cancelled");
-                return Ok(());
-            };
-            launch(&path)?;
+        Command::Shell => {
+            if let Some(path) = run_host_shell()? {
+                launch(&path)?;
+            }
         }
         Command::Launch(path) => launch(&path)?,
         Command::Inspect(path) => {
@@ -62,6 +66,11 @@ fn maybe_auto_update(options: &Options) {
     if options.skip_update || !options.command.allows_auto_update() || updates_disabled_by_env() {
         return;
     }
+    let settings = HostSettings::load();
+    if !settings.auto_update {
+        tracing::debug!("auto-update disabled in settings.json");
+        return;
+    }
 
     let args = relaunch_args_preserving_command(&options.command);
     match check_and_update(&args) {
@@ -92,7 +101,7 @@ fn relaunch_args_preserving_command(command: &Command) -> Vec<String> {
     match command {
         Command::Launch(path) => vec![path.display().to_string()],
         Command::Inspect(path) => vec!["--inspect".to_owned(), path.display().to_string()],
-        Command::Pick | Command::CheckUpdate | Command::Update | Command::Help => Vec::new(),
+        Command::Shell | Command::CheckUpdate | Command::Update | Command::Help => Vec::new(),
     }
 }
 
@@ -130,8 +139,24 @@ fn print_package(package: &ApkPackage) {
 fn init_logging() {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("apksule=info,apksule_runtime=info"));
-    let _ =
-        tracing_subscriber::fmt().with_env_filter(filter).with_target(false).compact().try_init();
+    // Prefer a file log under APPDATA so the GUI host does not depend on a console.
+    let log_dir = crate::settings::apksule_data_dir().join("logs");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_path = log_dir.join("host.log");
+    if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::sync::Mutex::new(file))
+            .with_target(false)
+            .compact()
+            .try_init();
+    } else {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(false)
+            .compact()
+            .try_init();
+    }
 }
 
 struct Options {
@@ -140,7 +165,7 @@ struct Options {
 }
 
 enum Command {
-    Pick,
+    Shell,
     Launch(PathBuf),
     Inspect(PathBuf),
     CheckUpdate,
@@ -150,7 +175,11 @@ enum Command {
 
 impl Command {
     fn allows_auto_update(&self) -> bool {
-        matches!(self, Self::Pick | Self::Launch(_) | Self::Inspect(_))
+        matches!(self, Self::Shell | Self::Launch(_) | Self::Inspect(_))
+    }
+
+    fn needs_console(&self) -> bool {
+        matches!(self, Self::Inspect(_) | Self::CheckUpdate | Self::Update | Self::Help)
     }
 }
 
@@ -175,13 +204,14 @@ impl Options {
 fn command_from_positional(positional: Vec<std::ffi::OsString>) -> Result<Command, Box<dyn Error>> {
     let mut arguments = positional.into_iter();
     let Some(first) = arguments.next() else {
-        return Ok(Command::Pick);
+        return Ok(Command::Shell);
     };
 
     if first == "--help" || first == "-h" {
         return Ok(Command::Help);
     }
     if first == "--version" || first == "-V" {
+        console_win::ensure_cli_console();
         println!("apksule {}", current_version());
         std::process::exit(0);
     }
@@ -214,7 +244,7 @@ fn print_help() {
     println!("Apksule {} — лёгкий runtime совместимости APK", current_version());
     println!();
     println!("ИСПОЛЬЗОВАНИЕ:");
-    println!("  apksule                    Выбрать APK через нативный диалог");
+    println!("  apksule                    Открыть окно хоста (APK и настройки)");
     println!("  apksule <path.apk>         Разобрать APK и открыть окно runtime");
     println!("  apksule --inspect <apk>    Вывести метаданные манифеста и выйти");
     println!("  apksule --check-update     Проверить GitHub Releases на новую сборку");
@@ -223,5 +253,7 @@ fn print_help() {
     println!("  apksule --version          Показать встроенную версию");
     println!();
     println!("Автообновление заменяет apksule.exe в папке установки (без Inno).");
-    println!("Отключить: --no-update, APKSULE_SKIP_UPDATE=1 или APKSULE_NO_UPDATE=1.");
+    println!(
+        "Отключить: настройки хоста, --no-update, APKSULE_SKIP_UPDATE=1 или APKSULE_NO_UPDATE=1."
+    );
 }

@@ -83,10 +83,13 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "softbuffer",
  "thiserror 2.0.19",
+ "tiny-skia 0.12.0",
  "tracing",
  "tracing-subscriber",
  "ureq",
+ "winit",
  "winres",
 ]
 

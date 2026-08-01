@@ -74,12 +74,20 @@ pub fn render_launch_surface(
         DexStatus::Running { activity, method } => {
             format!("СТАТУС: ВЫПОЛНЕНО {activity}.{method}")
         }
+        DexStatus::Degraded { activity, reason } => {
+            format!("СТАТУС: ОГРАНИЧЕННО {activity} - {reason}")
+        }
         DexStatus::Failed { reason } => format!("СТАТУС: ОШИБКА - {reason}"),
         DexStatus::Unsupported { dex_files, reason } => {
             format!("СТАТУС: ЗАГЛУШКА ({dex_files} DEX) - {reason}")
         }
     };
-    draw_text(&mut pixmap, &status_line, margin, y, 2.0, (255, 190, 92, 255));
+    let status_color = match status {
+        DexStatus::Failed { .. } => (255, 120, 100, 255),
+        DexStatus::Degraded { .. } => (255, 190, 92, 255),
+        _ => (120, 210, 170, 255),
+    };
+    draw_text(&mut pixmap, &status_line, margin, y, 2.0, status_color);
 
     if height > 50 {
         draw_text(
@@ -233,7 +241,7 @@ mod tests {
         let unknown = glyph('?');
         let text = "СРЕДА СОВМЕСТИМОСТИ ПАКЕТ ВЕРСИЯ ФАЙЛЫ РАЗРЕШЕНИЯ \
                     ТАБЛИЦА РЕСУРСОВ ЕСТЬ НЕТ СТАТУС ЗАГРУЖЕН ГОТОВО \
-                    КЛАССОВ ВЫПОЛНЕНО ОШИБКА ЗАГЛУШКА ИНТЕРФЕЙС БУДЕТ";
+                    КЛАССОВ ВЫПОЛНЕНО ОШИБКА ЗАГЛУШКА ИНТЕРФЕЙС БУДЕТ ОГРАНИЧЕННО";
 
         for character in text.chars().filter(|character| !character.is_whitespace()) {
             assert_ne!(glyph(character), unknown, "нет глифа для {character}");
