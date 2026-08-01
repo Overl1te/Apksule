@@ -1,3 +1,5 @@
+#![allow(clippy::cast_precision_loss, clippy::many_single_char_names)]
+
 mod support;
 
 use std::fs::File;
@@ -83,8 +85,8 @@ fn m3_runtime_inflates_ui_draws_and_handles_click() {
     assert!(r > 180 && g > 180 && b > 180, "UI surface should be light, got {r},{g},{b}");
 
     let button = nodes.iter().find(|node| node.kind.text() == Some("Save")).expect("button");
-    let x = (button.bounds.left + button.bounds.right) / 2;
-    let y = (button.bounds.top + button.bounds.bottom) / 2;
+    let x = i32::midpoint(button.bounds.left, button.bounds.right);
+    let y = i32::midpoint(button.bounds.top, button.bounds.bottom);
     runtime
         .on_input(&InputEvent::Motion(MotionEvent {
             action: MotionAction::Up,
@@ -105,8 +107,8 @@ fn m3_runtime_inflates_ui_draws_and_handles_click() {
     // Focus edit text then type a character.
     let edit = nodes.iter().find(|node| matches!(node.kind, apksule_compat::ViewKind::EditText { .. }));
     if let Some(edit) = edit {
-        let ex = (edit.bounds.left + edit.bounds.right) / 2;
-        let ey = (edit.bounds.top + edit.bounds.bottom) / 2;
+        let ex = i32::midpoint(edit.bounds.left, edit.bounds.right);
+        let ey = i32::midpoint(edit.bounds.top, edit.bounds.bottom);
         runtime
             .on_input(&InputEvent::Motion(MotionEvent {
                 action: MotionAction::Up,

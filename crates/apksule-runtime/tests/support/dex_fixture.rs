@@ -1,4 +1,4 @@
-#![allow(clippy::many_single_char_names, clippy::too_many_lines)]
+#![allow(clippy::many_single_char_names, clippy::too_many_lines, dead_code)]
 
 const HEADER_SIZE: usize = 0x70;
 

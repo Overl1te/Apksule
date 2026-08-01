@@ -401,8 +401,8 @@ mod tests {
         let nodes = host.snapshot();
         assert_eq!(nodes.len(), 3);
         let button_node = nodes.iter().find(|n| n.kind.text() == Some("Go")).expect("button");
-        let x = (button_node.bounds.left + button_node.bounds.right) / 2;
-        let y = (button_node.bounds.top + button_node.bounds.bottom) / 2;
+        let x = i32::midpoint(button_node.bounds.left, button_node.bounds.right);
+        let y = i32::midpoint(button_node.bounds.top, button_node.bounds.bottom);
         assert_eq!(host.pointer_up(x, y).as_deref(), Some("clicked"));
     }
 }
