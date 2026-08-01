@@ -10,8 +10,15 @@ rust-version.workspace = true
 apksule-apk.workspace = true
 apksule-runtime.workspace = true
 rfd.workspace = true
+self-replace = "1.5.0"
+semver = "1.0.28"
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+ureq = { version = "3.3.0", features = ["json"] }
 
 [lints]
 workspace = true

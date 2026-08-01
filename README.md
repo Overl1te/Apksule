@@ -95,6 +95,22 @@ Installer options (enabled by default):
 - associate `.apk` with Apksule so double-click opens the runtime window;
 - add **Open with Apksule** to the `.apk` context menu.
 
+## Auto-update
+
+On startup Apksule checks GitHub Releases for a newer
+`apksule-windows-x64.exe`, verifies `SHA256SUMS.txt` when present, replaces the
+running binary, and relaunches with the same arguments.
+
+```powershell
+apksule --check-update
+apksule --update
+apksule --no-update .\app.apk
+$env:APKSULE_NO_UPDATE = "1"
+```
+
+Update failures never block APK launch; they are logged and the current build
+continues.
+
 ## CI / Releases
 
 GitHub Actions:

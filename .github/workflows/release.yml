@@ -54,9 +54,13 @@ jobs:
 
       - name: Test
         run: cargo test --workspace --all-targets
+        env:
+          APKSULE_RELEASE_VERSION: ${{ steps.version.outputs.version }}
 
       - name: Release build
         run: cargo build --release -p apksule
+        env:
+          APKSULE_RELEASE_VERSION: ${{ steps.version.outputs.version }}
 
       - name: Install Inno Setup
         run: |
