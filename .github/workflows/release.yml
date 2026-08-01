@@ -97,27 +97,30 @@ jobs:
           name: Apksule ${{ steps.version.outputs.tag }}
           draft: false
           prerelease: false
-          generate_release_notes: true
+          generate_release_notes: false
           body: |
             ## Apksule ${{ steps.version.outputs.tag }}
 
-            Lightweight Windows APK compatibility runtime (Rust-only). This release is the M1 MVP:
-            APK selection, manifest parsing, dedicated runtime window, Activity lifecycle/input stubs,
-            storage sandbox, GMS shim, and unsupported-API logging.
+            Лёгкий runtime совместимости APK для Windows (только Rust). Текущий этап — M1 MVP:
+            выбор APK, разбор манифеста, отдельное окно runtime, заглушки Activity lifecycle/ввода,
+            песочница хранилища, GMS shim и журнал неподдержанных API.
 
-            ### Downloads
-            - **`Apksule-Setup-${{ steps.version.outputs.version }}-windows-x64.exe`** — recommended installer
-              - associates `.apk` with Apksule (double-click to open)
-              - adds **Open with Apksule** to the `.apk` context menu
-            - **`apksule-windows-x64.exe`** — portable binary
-            - **`SHA256SUMS.txt`** — checksums for all assets
+            ### Загрузки
+            - **`Apksule-Setup-${{ steps.version.outputs.version }}-windows-x64.exe`** — рекомендуемый установщик
+              - ассоциирует `.apk` с Apksule (открытие двойным кликом)
+              - добавляет пункт **Open with Apksule** в контекстное меню `.apk`
+            - **`apksule-windows-x64.exe`** — портативный бинарник
+            - **`SHA256SUMS.txt`** — контрольные суммы всех файлов
 
-            ### Notes
-            - M1 does **not** execute Dalvik/DEX yet; the window shows the diagnostic launch surface.
-            - DEX interpreter and real APK UI rendering are planned for M2+.
-            - Windows 10/11 x64 required.
+            ### Заметки
+            - M1 **ещё не** исполняет Dalvik/DEX; в окне показывается диагностическая поверхность запуска.
+            - Интерпретатор DEX и отрисовка настоящего UI APK запланированы на M2+.
+            - Нужны Windows 10/11 x64.
+            - При старте Apksule сам проверяет обновления на GitHub Releases.
 
-            See `README.md` and `ROADMAP.md` for architecture and next milestones.
+            Подробности: `README.md` и `ROADMAP.md`.
+
+            **История коммитов:** https://github.com/${{ github.repository }}/commits/${{ steps.version.outputs.tag }}
           files: |
             release-assets/apksule-windows-x64.exe
             release-assets/Apksule-Setup-${{ steps.version.outputs.version }}-windows-x64.exe
