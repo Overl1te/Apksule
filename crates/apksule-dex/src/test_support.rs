@@ -91,8 +91,10 @@ pub(crate) fn build_test_dex() -> Vec<u8> {
             registers: 2,
             ins: 0,
             outs: 0,
+            // new-instance v0; monitor-enter v0; const/16 v1,#9; iput/iget; monitor-exit v0; return
             instructions: vec![
-                0x0022, 0x0000, 0x0113, 0x0009, 0x0159, 0x0001, 0x0152, 0x0001, 0x010f,
+                0x0022, 0x0000, 0x001d, 0x0113, 0x0009, 0x0159, 0x0001, 0x0152, 0x0001, 0x001e,
+                0x010f,
             ],
             caught_type: None,
         },

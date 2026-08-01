@@ -68,11 +68,12 @@ fn executes_conditional_branch() {
 }
 
 #[test]
-fn executes_array_and_instance_field_access() {
+fn executes_array_instance_fields_and_monitors() {
     let dex = DexFile::parse(build_test_dex()).unwrap();
     let mut vm = Vm::new(&dex);
 
     assert_eq!(vm.invoke("LTest;", "array", "()I", &[]).unwrap(), Value::Int(7));
+    // object() includes monitor-enter/exit around the field ops.
     assert_eq!(vm.invoke("LTest;", "object", "()I", &[]).unwrap(), Value::Int(9));
 }
 

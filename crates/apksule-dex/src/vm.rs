@@ -588,6 +588,21 @@ impl Vm {
                     )?;
                     frame.pc += 2;
                 }
+                // monitor-enter / monitor-exit: single-threaded VM treats locks as no-ops
+                // after a null check (Dalvik throws NPE on a null monitor object).
+                0x1d | 0x1e => {
+                    let value = frame.read(usize::from(instruction >> 8))?;
+                    match value {
+                        Value::Null => return Err(VmError::NullReference),
+                        Value::Reference(HeapRef::Object(_) | HeapRef::Array(_)) => {}
+                        _ => {
+                            return Err(VmError::TypeMismatch(
+                                "monitor instruction expects an object reference",
+                            ));
+                        }
+                    }
+                    frame.pc += 1;
+                }
                 0x1f => {
                     let register = usize::from(instruction >> 8);
                     let type_idx = u32::from(code_unit(&code, frame.pc + 1)?);
