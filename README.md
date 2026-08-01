@@ -97,9 +97,13 @@ Installer options (enabled by default):
 
 ## Auto-update
 
-On startup Apksule checks GitHub Releases for a newer
-`apksule-windows-x64.exe`, verifies `SHA256SUMS.txt` when present, replaces the
-running binary, and relaunches with the same arguments.
+On startup Apksule silently checks GitHub Releases and, when a newer build
+exists, replaces files **in the installed application folder** (the directory
+of the running `apksule.exe`).
+
+It downloads only the portable `apksule-windows-x64.exe` (plus `apksule.ico`
+when present). It does **not** download or run the Inno Setup installer for
+updates.
 
 ```powershell
 apksule --check-update
@@ -108,8 +112,9 @@ apksule --no-update .\app.apk
 $env:APKSULE_NO_UPDATE = "1"
 ```
 
-Update failures never block APK launch; they are logged and the current build
-continues.
+If the install folder is under Program Files and not writable, Apksule schedules
+a deferred in-place copy (UAC may appear once), then relaunches. Update failures
+never block APK launch.
 
 ## CI / Releases
 

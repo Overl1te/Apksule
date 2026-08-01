@@ -222,6 +222,6 @@ fn print_help() {
     println!("  apksule --no-update ...    Skip the automatic update check");
     println!("  apksule --version          Print the embedded version");
     println!();
-    println!("Auto-update runs quietly on startup unless disabled with --no-update,");
-    println!("APKSULE_SKIP_UPDATE=1, or APKSULE_NO_UPDATE=1.");
+    println!("Auto-update replaces apksule.exe in the install folder (not via Inno).");
+    println!("Disable with --no-update, APKSULE_SKIP_UPDATE=1, or APKSULE_NO_UPDATE=1.");
 }

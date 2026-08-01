@@ -1,14 +1,13 @@
-//! GitHub Releases auto-updater for the Apksule host binary.
+//! In-place GitHub Releases auto-updater for the installed Apksule folder.
 //!
-//! Checks `Overl1te/Apksule` for a newer portable asset (`apksule-windows-x64.exe`),
-//! verifies SHA-256 against `SHA256SUMS.txt` when present, replaces the running
-//! executable, and re-launches with the original arguments.
+//! Downloads the portable `apksule-windows-x64.exe` (never the Inno Setup),
+//! verifies SHA-256, replaces `apksule.exe` (and optional `apksule.ico`) in the
+//! directory of the running binary, then relaunches.
 
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
-use std::path::Path;
-
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -20,6 +19,7 @@ use thiserror::Error;
 const OWNER: &str = "Overl1te";
 const REPO: &str = "Apksule";
 const PORTABLE_ASSET: &str = "apksule-windows-x64.exe";
+const ICON_ASSET: &str = "apksule.ico";
 const CHECKSUMS_ASSET: &str = "SHA256SUMS.txt";
 const USER_AGENT: &str = concat!("Apksule/", env!("APKSULE_VERSION"));
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
@@ -38,10 +38,12 @@ pub enum UpdateError {
     ChecksumMismatch { asset: String, expected: String, actual: String },
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("self-replace failed: {0}")]
+    #[error("in-place replace failed: {0}")]
     Replace(String),
     #[error("failed to relaunch Apksule: {0}")]
     Relaunch(String),
+    #[error("current executable path is invalid")]
+    InvalidExePath,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +53,7 @@ pub struct AvailableUpdate {
     pub tag: String,
     pub asset_name: String,
     pub download_url: String,
+    pub icon_url: Option<String>,
     pub checksum_url: Option<String>,
     pub html_url: String,
 }
@@ -96,6 +99,11 @@ pub fn check_for_update() -> Result<Option<AvailableUpdate>, UpdateError> {
         .iter()
         .find(|asset| asset.name == PORTABLE_ASSET)
         .ok_or_else(|| UpdateError::MissingAsset(PORTABLE_ASSET.to_owned()))?;
+    let icon_url = release
+        .assets
+        .iter()
+        .find(|asset| asset.name == ICON_ASSET)
+        .map(|asset| asset.browser_download_url.clone());
     let checksum_url = release
         .assets
         .iter()
@@ -108,37 +116,43 @@ pub fn check_for_update() -> Result<Option<AvailableUpdate>, UpdateError> {
         tag: release.tag_name,
         asset_name: asset.name.clone(),
         download_url: asset.browser_download_url.clone(),
+        icon_url,
         checksum_url,
         html_url: release.html_url,
     }))
 }
 
-/// Download, verify, replace the running binary, and re-exec with `relaunch_args`.
+/// Download the portable build and replace files in the installed application folder.
 ///
-/// On success this process is replaced and does not return.
+/// Never downloads or runs the Inno Setup installer. On success this process exits
+/// after scheduling / performing relaunch.
 pub fn apply_update(
     update: &AvailableUpdate,
     relaunch_args: &[String],
 ) -> Result<UpdateOutcome, UpdateError> {
-    let temp_dir =
-        env::temp_dir().join(format!("apksule-update-{}-{}", update.tag, std::process::id()));
-    fs::create_dir_all(&temp_dir)?;
-    let download_path = temp_dir.join(&update.asset_name);
+    let exe_path = env::current_exe()?;
+    let install_dir = exe_path.parent().ok_or(UpdateError::InvalidExePath)?.to_path_buf();
+    let pending_dir = update_staging_dir(&update.tag);
+    fs::create_dir_all(&pending_dir)?;
+
+    let staged_exe = pending_dir.join("apksule.exe");
+    let staged_ico = pending_dir.join("apksule.ico");
 
     tracing::info!(
         from = %update.current,
         to = %update.latest,
+        install_dir = %install_dir.display(),
         asset = %update.asset_name,
-        "downloading Apksule update"
+        "downloading in-place Apksule update (portable exe, not Inno Setup)"
     );
-    download_file(&update.download_url, &download_path)?;
+    download_file(&update.download_url, &staged_exe)?;
 
     if let Some(checksum_url) = &update.checksum_url {
         let sums = download_text(checksum_url)?;
         let expected = expected_sha256(&sums, &update.asset_name).ok_or_else(|| {
             UpdateError::MissingAsset(format!("checksum for {}", update.asset_name))
         })?;
-        let actual = sha256_file(&download_path)?;
+        let actual = sha256_file(&staged_exe)?;
         if !actual.eq_ignore_ascii_case(&expected) {
             return Err(UpdateError::ChecksumMismatch {
                 asset: update.asset_name.clone(),
@@ -151,17 +165,39 @@ pub fn apply_update(
         tracing::warn!("SHA256SUMS.txt missing from release; installing without checksum");
     }
 
-    // Windows cannot overwrite a running image; self_replace renames aside then swaps.
-    self_replace::self_replace(&download_path)
-        .map_err(|error| UpdateError::Replace(error.to_string()))?;
-    let _ = fs::remove_dir_all(&temp_dir);
+    if let Some(icon_url) = &update.icon_url {
+        match download_file(icon_url, &staged_ico) {
+            Ok(()) => tracing::info!("staged apksule.ico for install folder"),
+            Err(error) => tracing::warn!(%error, "optional icon download failed"),
+        }
+    }
 
-    tracing::info!(
-        from = %update.current,
-        to = %update.latest,
-        "update installed; relaunching"
-    );
-    relaunch(relaunch_args)?;
+    let writable = directory_is_writable(&install_dir);
+    if writable {
+        replace_in_place(&staged_exe, &staged_ico, &install_dir)?;
+        tracing::info!(
+            from = %update.current,
+            to = %update.latest,
+            dir = %install_dir.display(),
+            "files replaced in install folder; relaunching"
+        );
+        relaunch(&exe_path, relaunch_args)?;
+    } else {
+        tracing::info!(
+            dir = %install_dir.display(),
+            "install folder is not writable; scheduling deferred in-place replace"
+        );
+        schedule_deferred_replace(
+            &staged_exe,
+            &staged_ico,
+            &install_dir,
+            &exe_path,
+            relaunch_args,
+        )?;
+        // Current process must exit so the deferred copy can overwrite apksule.exe.
+        std::process::exit(0);
+    }
+
     Ok(UpdateOutcome::Updated { from: update.current.clone(), to: update.latest.clone() })
 }
 
@@ -179,6 +215,147 @@ pub fn check_and_update(relaunch_args: &[String]) -> Result<UpdateOutcome, Updat
             apply_update(&update, relaunch_args)
         }
     }
+}
+
+fn replace_in_place(
+    staged_exe: &Path,
+    staged_ico: &Path,
+    install_dir: &Path,
+) -> Result<(), UpdateError> {
+    // Windows cannot overwrite a running image; self_replace renames aside then swaps.
+    self_replace::self_replace(staged_exe)
+        .map_err(|error| UpdateError::Replace(error.to_string()))?;
+
+    if staged_ico.is_file() {
+        let target_ico = install_dir.join("apksule.ico");
+        if let Err(error) = fs::copy(staged_ico, &target_ico) {
+            tracing::warn!(%error, path = %target_ico.display(), "could not refresh apksule.ico");
+        }
+    }
+    Ok(())
+}
+
+fn schedule_deferred_replace(
+    staged_exe: &Path,
+    staged_ico: &Path,
+    install_dir: &Path,
+    target_exe: &Path,
+    relaunch_args: &[String],
+) -> Result<(), UpdateError> {
+    let pending_dir = staged_exe.parent().ok_or(UpdateError::InvalidExePath)?;
+    let script_path = pending_dir.join("apply-in-place.ps1");
+    let launcher_path = pending_dir.join("apply-in-place.cmd");
+
+    let args_literal = powershell_arg_list(relaunch_args);
+    let icon_block = if staged_ico.is_file() {
+        format!(
+            r"
+$iconSrc = '{icon}'
+$iconDst = Join-Path $TargetDir 'apksule.ico'
+Copy-Item -LiteralPath $iconSrc -Destination $iconDst -Force
+",
+            icon = powershell_literal(staged_ico)
+        )
+    } else {
+        String::new()
+    };
+
+    let script = format!(
+        r"
+$ErrorActionPreference = 'Stop'
+$ParentPid = {pid}
+$SourceExe = '{source_exe}'
+$TargetDir = '{target_dir}'
+$TargetExe = '{target_exe}'
+{icon_block}
+try {{
+  Wait-Process -Id $ParentPid -Timeout 120 -ErrorAction SilentlyContinue
+}} catch {{}}
+Start-Sleep -Milliseconds 700
+$destExe = Join-Path $TargetDir 'apksule.exe'
+Copy-Item -LiteralPath $SourceExe -Destination $destExe -Force
+$env:APKSULE_SKIP_UPDATE = '1'
+$argList = @({args})
+if ($argList.Count -gt 0) {{
+  Start-Process -FilePath $TargetExe -ArgumentList $argList -WorkingDirectory $TargetDir
+}} else {{
+  Start-Process -FilePath $TargetExe -WorkingDirectory $TargetDir
+}}
+",
+        pid = std::process::id(),
+        source_exe = powershell_literal(staged_exe),
+        target_dir = powershell_literal(install_dir),
+        target_exe = powershell_literal(target_exe),
+        icon_block = icon_block,
+        args = args_literal,
+    );
+    fs::write(&script_path, script)?;
+
+    let launcher = format!(
+        "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{}\"\r\n",
+        script_path.display()
+    );
+    fs::write(&launcher_path, launcher)?;
+
+    // Elevate when needed so Program Files installs can be overwritten without Inno.
+    let elevated = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &format!(
+                "Start-Process -FilePath '{}' -Verb RunAs -WindowStyle Hidden",
+                powershell_literal(&launcher_path)
+            ),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    match elevated {
+        Ok(status) if status.success() => Ok(()),
+        Ok(_) | Err(_) => {
+            // Fallback without UAC: works for per-user / writable install folders.
+            Command::new("cmd")
+                .args(["/C"])
+                .arg(&launcher_path)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|error| UpdateError::Replace(error.to_string()))?;
+            Ok(())
+        }
+    }
+}
+
+fn update_staging_dir(tag: &str) -> PathBuf {
+    let base = env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("TEMP").map(PathBuf::from))
+        .unwrap_or_else(env::temp_dir);
+    base.join("Apksule").join("updates").join(tag)
+}
+
+fn directory_is_writable(dir: &Path) -> bool {
+    let probe = dir.join(format!(".apksule-write-test-{}", std::process::id()));
+    match fs::write(&probe, b"ok") {
+        Ok(()) => {
+            let _ = fs::remove_file(probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+fn powershell_literal(path: &Path) -> String {
+    path.display().to_string().replace('\'', "''")
+}
+
+fn powershell_arg_list(args: &[String]) -> String {
+    args.iter().map(|arg| format!("'{}'", arg.replace('\'', "''"))).collect::<Vec<_>>().join(",")
 }
 
 fn fetch_latest_release() -> Result<GhRelease, UpdateError> {
@@ -279,10 +456,8 @@ fn sha256_file(path: &Path) -> Result<String, UpdateError> {
     Ok(hex)
 }
 
-fn relaunch(args: &[String]) -> Result<(), UpdateError> {
-    let exe = env::current_exe()?;
-    // Prevent update loops on the freshly replaced binary for this relaunch.
-    let mut command = Command::new(&exe);
+fn relaunch(exe: &Path, args: &[String]) -> Result<(), UpdateError> {
+    let mut command = Command::new(exe);
     command
         .args(args)
         .env("APKSULE_SKIP_UPDATE", "1")
@@ -314,5 +489,14 @@ def456 *Apksule-Setup-0.1.1-windows-x64.exe
     fn parses_v_prefix_tags() {
         assert_eq!(parse_tag_version("v0.1.1").unwrap(), Version::new(0, 1, 1));
         assert_eq!(parse_tag_version("0.2.0").unwrap(), Version::new(0, 2, 0));
+    }
+
+    #[test]
+    fn powershell_escaping_doubles_quotes() {
+        assert_eq!(
+            powershell_literal(Path::new(r"C:\Program Files\Apksule")),
+            r"C:\Program Files\Apksule"
+        );
+        assert_eq!(powershell_literal(Path::new(r"C:\O'Brien\Apksule")), r"C:\O''Brien\Apksule");
     }
 }
