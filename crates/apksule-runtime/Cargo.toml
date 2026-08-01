@@ -1,0 +1,19 @@
+[package]
+name = "apksule-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+apksule-apk.workspace = true
+apksule-compat.workspace = true
+softbuffer.workspace = true
+thiserror.workspace = true
+tiny-skia.workspace = true
+tracing.workspace = true
+winit.workspace = true
+
+[lints]
+workspace = true

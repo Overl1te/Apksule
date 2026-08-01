@@ -1,0 +1,20 @@
+[package]
+name = "apksule"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+apksule-apk.workspace = true
+apksule-runtime.workspace = true
+rfd.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
+
+[target."cfg(windows)".build-dependencies]
+winres = "0.1.12"

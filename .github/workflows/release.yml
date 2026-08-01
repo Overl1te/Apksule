@@ -1,0 +1,124 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create or refresh (e.g. v0.1.0)"
+        required: true
+        default: "v0.1.0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-windows:
+    name: Build and publish Windows release
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ inputs.tag }}".Trim()
+          } else {
+            $tag = "${{ github.ref_name }}"
+          }
+          if (-not $tag.StartsWith("v")) {
+            throw "Release tag must start with 'v' (got: $tag)"
+          }
+          $version = $tag.Substring(1)
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Publishing $tag ($version)"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-msvc-release
+
+      - name: Test
+        run: cargo test --workspace --all-targets
+
+      - name: Release build
+        run: cargo build --release -p apksule
+
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup --yes --no-progress
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            throw "ISCC.exe not found after Inno Setup install"
+          }
+
+      - name: Build installer
+        shell: pwsh
+        run: .\scripts\build-installer.ps1 -SkipBuild
+
+      - name: Stage release assets
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $dist = "dist"
+          New-Item -ItemType Directory -Path "release-assets" -Force | Out-Null
+          Copy-Item "$dist\apksule.exe" "release-assets\apksule-windows-x64.exe"
+          $setup = Get-ChildItem $dist -Filter "Apksule-Setup-*.exe" | Select-Object -First 1
+          if (-not $setup) { throw "Installer missing" }
+          Copy-Item $setup.FullName "release-assets\Apksule-Setup-$version-windows-x64.exe"
+          Copy-Item "$dist\apksule.ico" "release-assets\apksule.ico"
+          Copy-Item "$dist\apksule-avatar.png" "release-assets\apksule-avatar.png"
+          Get-FileHash "release-assets\*" -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)" } |
+            Set-Content -Encoding ascii "release-assets\SHA256SUMS.txt"
+          Get-ChildItem release-assets | Format-Table Name, Length
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Apksule ${{ steps.version.outputs.tag }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## Apksule ${{ steps.version.outputs.tag }}
+
+            Lightweight Windows APK compatibility runtime (Rust-only). This release is the M1 MVP:
+            APK selection, manifest parsing, dedicated runtime window, Activity lifecycle/input stubs,
+            storage sandbox, GMS shim, and unsupported-API logging.
+
+            ### Downloads
+            - **`Apksule-Setup-${{ steps.version.outputs.version }}-windows-x64.exe`** — recommended installer
+              - associates `.apk` with Apksule (double-click to open)
+              - adds **Open with Apksule** to the `.apk` context menu
+            - **`apksule-windows-x64.exe`** — portable binary
+            - **`SHA256SUMS.txt`** — checksums for all assets
+
+            ### Notes
+            - M1 does **not** execute Dalvik/DEX yet; the window shows the diagnostic launch surface.
+            - DEX interpreter and real APK UI rendering are planned for M2+.
+            - Windows 10/11 x64 required.
+
+            See `README.md` and `ROADMAP.md` for architecture and next milestones.
+          files: |
+            release-assets/apksule-windows-x64.exe
+            release-assets/Apksule-Setup-${{ steps.version.outputs.version }}-windows-x64.exe
+            release-assets/apksule.ico
+            release-assets/apksule-avatar.png
+            release-assets/SHA256SUMS.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

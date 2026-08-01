@@ -1,0 +1,8 @@
+/target/
+/dist/
+/release-assets/
+*.log
+*.apk
+.idea/
+.vscode/
+actions-runner/

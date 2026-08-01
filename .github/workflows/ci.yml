@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows build / test / installer
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-msvc
+
+      - name: Test
+        run: cargo test --workspace --all-targets
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Release build
+        run: cargo build --release -p apksule
+
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup --yes --no-progress
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            throw "ISCC.exe not found after Inno Setup install"
+          }
+
+      - name: Build installer
+        shell: pwsh
+        run: .\scripts\build-installer.ps1 -SkipBuild
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: apksule-windows-x64
+          path: |
+            dist/apksule.exe
+            dist/Apksule-Setup-*.exe
+            dist/apksule.ico
+            dist/apksule-avatar.png
+          if-no-files-found: error
+
+  # Self-hosted Ubuntu runner (192.168.0.133). Confirms the repo-bound runner is
+  # online and validates the Rust workspace on Linux (library crates only —
+  # the Windows host GUI stack is exercised by the windows job).
+  self-hosted-linux:
+    name: Self-hosted Linux check
+    runs-on: [self-hosted, linux, x64, apksule]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Test library crates
+        run: cargo test -p apksule-apk -p apksule-compat --all-targets
+
+      - name: Clippy library crates
+        run: cargo clippy -p apksule-apk -p apksule-compat --all-targets -- -D warnings
