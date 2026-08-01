@@ -6,6 +6,6 @@ mod lifecycle;
 mod renderer;
 mod runtime;
 
-pub use dex::{DexError, DexRuntime, DexStatus, StubDexRuntime};
+pub use dex::{DexError, DexRuntime, DexStatus, InterpretingDexRuntime, StubDexRuntime};
 pub use lifecycle::{ActivityLifecycle, ActivityState, LifecycleError};
 pub use runtime::{Runtime, RuntimeError};

@@ -117,10 +117,7 @@ fn print_package(package: &ApkPackage) {
         package.version.name.as_deref().unwrap_or("неизвестно"),
         package.version.code.map_or_else(|| "неизвестно".to_owned(), |code| code.to_string())
     );
-    println!(
-        "Главная activity: {}",
-        package.main_activity.as_deref().unwrap_or("не объявлена")
-    );
+    println!("Главная activity: {}", package.main_activity.as_deref().unwrap_or("не объявлена"));
     println!("Activities: {}", package.activities.len());
     println!("Разрешения: {}", package.permissions.len());
     println!("DEX-файлы: {}", package.resources.dex_entries.len());

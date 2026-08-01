@@ -11,7 +11,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, OwnedDisplayHandle};
 use winit::window::{Window, WindowId};
 
-use crate::dex::{DexError, DexRuntime, StubDexRuntime};
+use crate::dex::{DexError, DexRuntime, InterpretingDexRuntime};
 use crate::input::InputTranslator;
 use crate::lifecycle::{ActivityLifecycle, ActivityState, LifecycleError};
 use crate::renderer::{RenderError, render_launch_surface};
@@ -61,7 +61,7 @@ impl Runtime {
             "runtime context created"
         );
 
-        let mut vm: Box<dyn DexRuntime> = Box::new(StubDexRuntime::new());
+        let mut vm: Box<dyn DexRuntime> = Box::new(InterpretingDexRuntime::new());
         vm.load(&package, &android_context)?;
         vm.on_lifecycle(ActivityState::Created)?;
 

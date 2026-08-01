@@ -4,19 +4,21 @@ Apksule — эксперимент для Windows: лёгкий runtime совм
 только на Rust. Это **не** эмулятор Android: нет виртуального устройства,
 образа системы, ADB и стороннего Android runtime.
 
-MVP этапа M1 собирает конвейер запуска вокруг будущего исполнения DEX:
+Этап M2 реализует конвейер запуска и минимальное исполнение DEX:
 
 1. выбрать APK через нативный диалог Windows;
 2. просмотреть ZIP без распаковки;
 3. декодировать бинарный `AndroidManifest.xml`;
 4. создать изолированный контекст на пакет;
 5. открыть отдельное окно с программной отрисовкой;
-6. передать lifecycle Activity и события ввода к границе DEX;
-7. журналировать неподдерживаемые вызовы Android API.
+6. разобрать `classes.dex` и исполнить lifecycle-методы Activity;
+7. передать события ввода к границе DEX;
+8. журналировать неподдерживаемые вызовы Android API.
 
-В M1 используется `StubDexRuntime`: он доказывает путь «APK → окно», но
-**не** исполняет `classes.dex` и поэтому ещё не рисует настоящий UI Notally.
-Интерпретатор DEX на Rust — веха M2.
+M2 исполняет минимальный самогенерируемый APK вплоть до `Activity.onCreate`.
+Это ещё **не** означает совместимость с Notally: Android UI, `resources.arsc`,
+AndroidX/Material и Room входят в M3–M4. Поэтому настоящий интерфейс Notally
+пока не рисуется.
 
 ## Архитектура
 
@@ -37,8 +39,8 @@ apksule-runtime ---------------------+
   трейт DexRuntime                  хранилище / заглушки GMS
         |                           журнал неподдержанных API
         v
-  StubDexRuntime (M1)
-  интерпретатор DEX на Rust (M2)
+  apksule-dex
+  парсер + интерпретатор DEX (M2)
 ```
 
 Лаунчер зависит от `apksule-apk` и `apksule-runtime`, но **не** импортирует
@@ -49,6 +51,7 @@ crate совместимости напрямую. Android-подобные API 
 
 - `crates/apksule` — единственный executable: выбор файла и запуск.
 - `crates/apksule-apk` — индекс ZIP APK, парсер AXML, загрузка сырых entry.
+- `crates/apksule-dex` — безопасный парсер DEX и регистровый интерпретатор.
 - `crates/apksule-runtime` — окно, рендер, lifecycle, ввод, граница DEX.
 - `crates/apksule-compat` — Context, ресурсы, хранилище, заглушки GMS, лог API.
 - `ROADMAP.md` — вехи совместимости и конкретные TODO.
@@ -145,9 +148,9 @@ GitHub Actions:
 Major намеренно ручной: когда проект выходит из 0.x —
 `git tag -a v1.0.0 -m "..." && git push origin v1.0.0`.
 
-### Первый эталонный APK: Notally
+### Эталон совместимости: Notally
 
-Эталон M1 — Notally 6.2 с F-Droid:
+Целевой APK для M4 — Notally 6.2 с F-Droid:
 
 ```powershell
 $apk = "$env:TEMP\Notally.apk"
@@ -160,8 +163,18 @@ cargo run -p apksule -- $apk
 
 Ожидаемые значения inspection: пакет `com.omgodse.notally`, launcher activity
 `com.omgodse.notally.activities.MainActivity`, один DEX и скомпилированная
-таблица ресурсов. Затем окно показывает временную поверхность запуска M1 —
-диагностика runtime, а не UI Notally.
+таблица ресурсов. M2 пытается разобрать и запустить DEX, но останавливается на
+ещё не реализованной поверхности Android/AndroidX. Окно остаётся диагностикой
+runtime, а не UI Notally.
+
+Минимальный критерий M2 проверяется без Android SDK:
+
+```powershell
+cargo test -p apksule-runtime --test m2_minimal_apk
+```
+
+Тест сам собирает APK в памяти, исполняет `Activity.onCreate` и проверяет
+side effect native bridge в песочнице.
 
 ## Хранилище и логи
 
@@ -190,8 +203,12 @@ cargo run -p apksule -- $apk
 - каталоги files/cache/databases/log на пакет
 - обнаружение Google Play Services и детерминированные заглушки
 - окно цели через `winit`, `softbuffer` и `tiny-skia`
+- проверенный парсер DEX 035–041 с checksum/SHA-1 и проверкой границ
+- регистровая VM: базовые опкоды, invoke, объекты/массивы, поля и исключения
+- class loading, `<clinit>`, наследование, virtual dispatch и лимиты VM
+- запуск `Activity.onCreate` минимального APK через native/framework bridge
 
-DEX и Android UI для отрисовки интерфейса самого APK — в
+Android UI для отрисовки интерфейса самого APK — следующий этап в
 [ROADMAP.md](ROADMAP.md).
 
 ## Лицензия

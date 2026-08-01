@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   windows:
-    name: Windows: сборка / тесты / установщик
+    name: "Windows: сборка / тесты / установщик"
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -65,7 +65,7 @@ jobs:
   # Rust workspace на Linux (только library-crate'ы — GUI Windows-хоста
   # проверяется job'ом windows).
   self-hosted-linux:
-    name: Self-hosted Linux: проверка
+    name: "Self-hosted Linux: проверка"
     runs-on: [self-hosted, linux, x64, apksule]
     timeout-minutes: 30
     steps:
@@ -78,7 +78,7 @@ jobs:
           components: clippy
 
       - name: Test library crates
-        run: cargo test -p apksule-apk -p apksule-compat --all-targets
+        run: cargo test -p apksule-apk -p apksule-compat -p apksule-dex --all-targets
 
       - name: Clippy library crates
-        run: cargo clippy -p apksule-apk -p apksule-compat --all-targets -- -D warnings
+        run: cargo clippy -p apksule-apk -p apksule-compat -p apksule-dex --all-targets -- -D warnings

@@ -110,16 +110,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "apksule-dex"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "apksule-runtime"
 version = "0.1.0"
 dependencies = [
  "apksule-apk",
  "apksule-compat",
+ "apksule-dex",
  "softbuffer",
  "thiserror 2.0.19",
  "tiny-skia 0.12.0",
  "tracing",
  "winit",
+ "zip",
 ]
 
 [[package]]

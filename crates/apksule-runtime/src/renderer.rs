@@ -30,7 +30,7 @@ pub fn render_launch_surface(
     let mut y = 34.0;
     draw_text(&mut pixmap, "APKSULE", margin, y, 4.0, (72, 201, 176, 255));
     y += 48.0;
-    draw_text(&mut pixmap, "M1 COMPATIBILITY RUNTIME", margin, y, 2.0, (150, 164, 184, 255));
+    draw_text(&mut pixmap, "СРЕДА СОВМЕСТИМОСТИ M2", margin, y, 2.0, (150, 164, 184, 255));
     y += 42.0;
 
     let mut panel = Paint::default();
@@ -45,18 +45,18 @@ pub fn render_launch_surface(
     );
 
     let lines = [
-        format!("PACKAGE: {}", package.package_name),
-        format!("ACTIVITY: {}", package.main_activity.as_deref().unwrap_or("NO LAUNCHER ACTIVITY")),
+        format!("ПАКЕТ: {}", package.package_name),
+        format!("АКТИВНОСТЬ: {}", package.main_activity.as_deref().unwrap_or("НЕ ОБЪЯВЛЕНА")),
         format!(
-            "VERSION: {} ({})",
-            package.version.name.as_deref().unwrap_or("UNKNOWN"),
-            package.version.code.map_or_else(|| "UNKNOWN".to_owned(), |code| code.to_string())
+            "ВЕРСИЯ: {} ({})",
+            package.version.name.as_deref().unwrap_or("НЕИЗВЕСТНО"),
+            package.version.code.map_or_else(|| "НЕИЗВЕСТНО".to_owned(), |code| code.to_string())
         ),
-        format!("DEX FILES: {}", package.resources.dex_entries.len()),
-        format!("PERMISSIONS: {}", package.permissions.len()),
+        format!("DEX-ФАЙЛЫ: {}", package.resources.dex_entries.len()),
+        format!("РАЗРЕШЕНИЯ: {}", package.permissions.len()),
         format!(
-            "RESOURCE TABLE: {}",
-            if package.resources.has_resource_table { "PRESENT" } else { "MISSING" }
+            "ТАБЛИЦА РЕСУРСОВ: {}",
+            if package.resources.has_resource_table { "ЕСТЬ" } else { "НЕТ" }
         ),
     ];
 
@@ -67,9 +67,16 @@ pub fn render_launch_surface(
 
     y += 14.0;
     let status_line = match status {
-        DexStatus::NotLoaded => "STATUS: DEX NOT LOADED".to_owned(),
+        DexStatus::NotLoaded => "СТАТУС: DEX НЕ ЗАГРУЖЕН".to_owned(),
+        DexStatus::Ready { dex_files, classes } => {
+            format!("СТАТУС: ГОТОВО - {dex_files} DEX, {classes} КЛАССОВ")
+        }
+        DexStatus::Running { activity, method } => {
+            format!("СТАТУС: ВЫПОЛНЕНО {activity}.{method}")
+        }
+        DexStatus::Failed { reason } => format!("СТАТУС: ОШИБКА - {reason}"),
         DexStatus::Unsupported { dex_files, reason } => {
-            format!("STATUS: M1 STUB ({dex_files} DEX) - {reason}")
+            format!("СТАТУС: ЗАГЛУШКА ({dex_files} DEX) - {reason}")
         }
     };
     draw_text(&mut pixmap, &status_line, margin, y, 2.0, (255, 190, 92, 255));
@@ -77,7 +84,7 @@ pub fn render_launch_surface(
     if height > 50 {
         draw_text(
             &mut pixmap,
-            "DEX EXECUTION AND APK-OWNED UI ARRIVE IN M2",
+            "M2: ИСПОЛНЕНИЕ DEX. ИНТЕРФЕЙС APK БУДЕТ В M3",
             margin,
             height as f32 - 34.0,
             2.0,
@@ -134,6 +141,7 @@ fn draw_text(
 }
 
 #[rustfmt::skip]
+#[allow(clippy::match_same_arms)] // Latin/Cyrillic aliases intentionally share bitmap glyphs.
 fn glyph(character: char) -> [u8; 7] {
     match character {
         'A' => [0b01110,0b10001,0b10001,0b11111,0b10001,0b10001,0b10001],
@@ -162,6 +170,38 @@ fn glyph(character: char) -> [u8; 7] {
         'X' => [0b10001,0b10001,0b01010,0b00100,0b01010,0b10001,0b10001],
         'Y' => [0b10001,0b10001,0b01010,0b00100,0b00100,0b00100,0b00100],
         'Z' => [0b11111,0b00001,0b00010,0b00100,0b01000,0b10000,0b11111],
+        'А' => [0b01110,0b10001,0b10001,0b11111,0b10001,0b10001,0b10001],
+        'Б' => [0b11111,0b10000,0b10000,0b11110,0b10001,0b10001,0b11110],
+        'В' => [0b11110,0b10001,0b10001,0b11110,0b10001,0b10001,0b11110],
+        'Г' => [0b11111,0b10000,0b10000,0b10000,0b10000,0b10000,0b10000],
+        'Д' => [0b00110,0b01010,0b01010,0b01010,0b01010,0b11111,0b10001],
+        'Е' | 'Ё' => [0b11111,0b10000,0b10000,0b11110,0b10000,0b10000,0b11111],
+        'Ж' => [0b10101,0b10101,0b01110,0b00100,0b01110,0b10101,0b10101],
+        'З' => [0b11110,0b00001,0b00001,0b01110,0b00001,0b00001,0b11110],
+        'И' => [0b10001,0b10011,0b10101,0b10101,0b10101,0b11001,0b10001],
+        'Й' => [0b01010,0b00100,0b10001,0b10011,0b10101,0b11001,0b10001],
+        'К' => [0b10001,0b10010,0b10100,0b11000,0b10100,0b10010,0b10001],
+        'Л' => [0b00111,0b01001,0b01001,0b01001,0b01001,0b10001,0b10001],
+        'М' => [0b10001,0b11011,0b10101,0b10101,0b10001,0b10001,0b10001],
+        'Н' => [0b10001,0b10001,0b10001,0b11111,0b10001,0b10001,0b10001],
+        'О' => [0b01110,0b10001,0b10001,0b10001,0b10001,0b10001,0b01110],
+        'П' => [0b11111,0b10001,0b10001,0b10001,0b10001,0b10001,0b10001],
+        'Р' => [0b11110,0b10001,0b10001,0b11110,0b10000,0b10000,0b10000],
+        'С' => [0b01111,0b10000,0b10000,0b10000,0b10000,0b10000,0b01111],
+        'Т' => [0b11111,0b00100,0b00100,0b00100,0b00100,0b00100,0b00100],
+        'У' => [0b10001,0b10001,0b10001,0b01111,0b00001,0b00001,0b11110],
+        'Ф' => [0b00100,0b01110,0b10101,0b10101,0b01110,0b00100,0b00100],
+        'Х' => [0b10001,0b10001,0b01010,0b00100,0b01010,0b10001,0b10001],
+        'Ц' => [0b10010,0b10010,0b10010,0b10010,0b10010,0b11111,0b00001],
+        'Ч' => [0b10001,0b10001,0b10001,0b01111,0b00001,0b00001,0b00001],
+        'Ш' => [0b10101,0b10101,0b10101,0b10101,0b10101,0b10101,0b11111],
+        'Щ' => [0b10101,0b10101,0b10101,0b10101,0b10101,0b11111,0b00001],
+        'Ъ' => [0b11000,0b01000,0b01000,0b01110,0b01001,0b01001,0b01110],
+        'Ы' => [0b10001,0b10001,0b10001,0b11101,0b10011,0b10011,0b11101],
+        'Ь' => [0b10000,0b10000,0b10000,0b11110,0b10001,0b10001,0b11110],
+        'Э' => [0b11110,0b00001,0b00001,0b01111,0b00001,0b00001,0b11110],
+        'Ю' => [0b10010,0b10101,0b10101,0b11101,0b10101,0b10101,0b10010],
+        'Я' => [0b01111,0b10001,0b10001,0b01111,0b00101,0b01001,0b10001],
         '0' => [0b01110,0b10001,0b10011,0b10101,0b11001,0b10001,0b01110],
         '1' => [0b00100,0b01100,0b00100,0b00100,0b00100,0b00100,0b01110],
         '2' => [0b01110,0b10001,0b00001,0b00010,0b00100,0b01000,0b11111],
@@ -181,5 +221,22 @@ fn glyph(character: char) -> [u8; 7] {
         ')' => [0b01000,0b00100,0b00010,0b00010,0b00010,0b00100,0b01000],
         ' ' => [0; 7],
         _ => [0b01110,0b10001,0b00010,0b00100,0b00100,0,0b00100],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::glyph;
+
+    #[test]
+    fn russian_diagnostic_copy_has_glyphs() {
+        let unknown = glyph('?');
+        let text = "СРЕДА СОВМЕСТИМОСТИ ПАКЕТ ВЕРСИЯ ФАЙЛЫ РАЗРЕШЕНИЯ \
+                    ТАБЛИЦА РЕСУРСОВ ЕСТЬ НЕТ СТАТУС ЗАГРУЖЕН ГОТОВО \
+                    КЛАССОВ ВЫПОЛНЕНО ОШИБКА ЗАГЛУШКА ИНТЕРФЕЙС БУДЕТ";
+
+        for character in text.chars().filter(|character| !character.is_whitespace()) {
+            assert_ne!(glyph(character), unknown, "нет глифа для {character}");
+        }
     }
 }

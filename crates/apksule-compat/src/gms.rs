@@ -80,7 +80,7 @@ impl GmsShim {
             | ("FirebaseAnalytics", "getInstance") => StubResponse::Null,
             ("Tasks", "forResult") => StubResponse::Empty,
             _ => StubResponse::Unsupported {
-                reason: format!("{service}.{method} is outside the M1 compatibility surface"),
+                reason: format!("{service}.{method} находится вне поверхности совместимости M2"),
             },
         };
         self.api_log.unsupported(

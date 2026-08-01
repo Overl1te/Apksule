@@ -9,11 +9,15 @@ rust-version.workspace = true
 [dependencies]
 apksule-apk.workspace = true
 apksule-compat.workspace = true
+apksule-dex.workspace = true
 softbuffer.workspace = true
 thiserror.workspace = true
 tiny-skia.workspace = true
 tracing.workspace = true
 winit.workspace = true
+
+[dev-dependencies]
+zip.workspace = true
 
 [lints]
 workspace = true
