@@ -2,7 +2,9 @@
 ; Builds a single-file setup with .apk file association and context menu.
 
 #define MyAppName "Apksule"
-#define MyAppVersion "0.1.0"
+#ifndef MyAppVersion
+  #define MyAppVersion "0.1.0"
+#endif
 #define MyAppPublisher "Overl1te"
 #define MyAppURL "https://github.com/Overl1te/Apksule"
 #define MyAppExeName "apksule.exe"

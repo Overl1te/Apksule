@@ -1,15 +1,20 @@
 # Build Apksule release binary + Inno Setup installer.
-# Usage: .\scripts\build-installer.ps1 [-SkipBuild]
+# Usage: .\scripts\build-installer.ps1 [-SkipBuild] [-Version 0.1.1]
 
 [CmdletBinding()]
 param(
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string]$Version = "0.1.0"
 )
 
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
+
+if ($Version -notmatch '^\d+\.\d+\.\d+$') {
+    throw "Version must look like 0.1.0 (got: $Version)"
+}
 
 $IsccCandidates = @(
     "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
@@ -33,8 +38,13 @@ if (-not (Test-Path $ReleaseExe)) {
     throw "Missing release binary: $ReleaseExe"
 }
 
-Write-Host "==> compiling Inno Setup installer"
-& $Iscc "/DSourceDir=$Root\target\release" "/DOutputDir=$Dist" "/DIconFile=$Root\assets\apksule.ico" "$Root\installer\apksule.iss"
+Write-Host "==> compiling Inno Setup installer (version $Version)"
+& $Iscc `
+    "/DMyAppVersion=$Version" `
+    "/DSourceDir=$Root\target\release" `
+    "/DOutputDir=$Dist" `
+    "/DIconFile=$Root\assets\apksule.ico" `
+    "$Root\installer\apksule.iss"
 if ($LASTEXITCODE -ne 0) {
     throw "ISCC failed with exit code $LASTEXITCODE"
 }

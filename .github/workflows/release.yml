@@ -67,7 +67,7 @@ jobs:
 
       - name: Build installer
         shell: pwsh
-        run: .\scripts\build-installer.ps1 -SkipBuild
+        run: .\scripts\build-installer.ps1 -SkipBuild -Version "${{ steps.version.outputs.version }}"
 
       - name: Stage release assets
         shell: pwsh

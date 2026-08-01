@@ -101,8 +101,31 @@ GitHub Actions:
 
 - `CI` — Windows test/clippy/release build + Inno Setup packaging; Linux
   self-hosted runner validates library crates.
+- `Auto Tag` — on every push to `master`/`main`, creates the next semver tag
+  and dispatches `Release`.
 - `Release` — on `v*` tags (or manual dispatch) publishes Windows assets to
   GitHub Releases with checksums and release notes.
+
+### Auto versioning
+
+Tags are computed from the previous `vX.Y.Z` and the size/intent of the change:
+
+| Bump | Result | When |
+|------|--------|------|
+| patch | `v0.1.0` → `v0.1.1` | small / docs / CI / `fix:` |
+| minor | `v0.1.1` → `v0.2.0` | large code churn / `feat:` |
+| major | `v1.0.0` | **manual only** |
+
+Overrides in the commit message:
+
+- `[patch]` / `bump:patch` — force patch
+- `[minor]` / `bump:minor` — force minor
+- `[no-tag]` / `[skip-tag]` — skip tagging
+- `[major]` / `bump:major` — ignored (create `v1.0.0` yourself)
+
+Major stays manual on purpose: publish `v1.0.0` with
+`git tag -a v1.0.0 -m "..." && git push origin v1.0.0` when you decide the
+project is out of 0.x.
 
 ### First reference APK: Notally
 

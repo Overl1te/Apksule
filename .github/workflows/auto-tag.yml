@@ -1,0 +1,256 @@
+name: Auto Tag
+
+on:
+  push:
+    branches: [master, main]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: auto-tag-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Compute and push semver tag
+    runs-on: ubuntu-latest
+    # Skip tag-push recursion and bot-only noise.
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release)') }}
+    outputs:
+      tagged: ${{ steps.bump.outputs.tagged }}
+      tag: ${{ steps.bump.outputs.tag }}
+      bump: ${{ steps.bump.outputs.bump }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide next version
+        id: bump
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          def run(args: list[str]) -> str:
+              return subprocess.check_output(args, text=True).strip()
+
+          def latest_tag() -> str | None:
+              try:
+                  return run(["git", "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*"])
+              except subprocess.CalledProcessError:
+                  return None
+
+          def parse_semver(tag: str) -> tuple[int, int, int]:
+              match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", tag)
+              if not match:
+                  raise SystemExit(f"unsupported tag format: {tag}")
+              return tuple(int(part) for part in match.groups())
+
+          message = os.environ.get("COMMIT_MESSAGE", "")
+          first_line = message.splitlines()[0].strip() if message else ""
+
+          skip_markers = ("[no-tag]", "[skip-tag]", "[skip release]")
+          if any(marker in message.lower() for marker in skip_markers):
+              print("skip: commit requested no auto-tag")
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write("tagged=false\n")
+                  output.write("tag=\n")
+                  output.write("bump=skip\n")
+              sys.exit(0)
+
+          major_markers = ("bump:major", "#major", "[major]")
+          if any(marker in message.lower() for marker in major_markers):
+              print("skip: major bumps are manual only (create v1.0.0 yourself)")
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write("tagged=false\n")
+                  output.write("tag=\n")
+                  output.write("bump=major-manual\n")
+              sys.exit(0)
+
+          current = latest_tag()
+          if current is None:
+              major, minor, patch = 0, 0, 0
+              base = "UNCOMMITTED"
+          else:
+              major, minor, patch = parse_semver(current)
+              base = current
+
+          # Diff against previous tag, or against empty tree for the first tag.
+          if current is None:
+              diff_range = ["--root", "HEAD"]
+          else:
+              diff_range = [f"{current}..HEAD"]
+
+          name_status = run(["git", "diff", "--name-status", *diff_range]).splitlines()
+          numstat = run(["git", "diff", "--numstat", *diff_range]).splitlines()
+
+          files: list[str] = []
+          for line in name_status:
+              parts = line.split("\t")
+              if len(parts) >= 2:
+                  files.append(parts[-1])
+
+          added = deleted = 0
+          for line in numstat:
+              parts = line.split("\t")
+              if len(parts) != 3:
+                  continue
+              a, d, _path = parts
+              if a.isdigit():
+                  added += int(a)
+              if d.isdigit():
+                  deleted += int(d)
+          lines = added + deleted
+
+          code_prefixes = (
+              "crates/",
+              "installer/",
+              "Cargo.toml",
+              "Cargo.lock",
+              "scripts/build-installer.ps1",
+          )
+          meta_prefixes = (
+              ".github/",
+              "assets/",
+              "README.md",
+              "ROADMAP.md",
+              "LICENSE-",
+              "rustfmt.toml",
+              ".gitignore",
+              "scripts/setup_runner.py",
+              "scripts/auto_version",
+          )
+
+          def is_code(path: str) -> bool:
+              return any(path == prefix or path.startswith(prefix) for prefix in code_prefixes)
+
+          def is_meta(path: str) -> bool:
+              return any(path == prefix or path.startswith(prefix) for prefix in meta_prefixes)
+
+          code_files = [path for path in files if is_code(path)]
+          meta_files = [path for path in files if is_meta(path)]
+          other_files = [path for path in files if path not in code_files and path not in meta_files]
+
+          forced = None
+          lower = message.lower()
+          if any(marker in lower for marker in ("bump:minor", "#minor", "[minor]")):
+              forced = "minor"
+          elif any(marker in lower for marker in ("bump:patch", "#patch", "[patch]")):
+              forced = "patch"
+          elif re.match(r"^(feat)(\(.+\))?!?:", first_line, re.IGNORECASE):
+              # Conventional commits: feat => minor. Breaking major is still manual.
+              if "!" in first_line.split(":")[0]:
+                  print("note: breaking change marker found; major remains manual -> minor")
+              forced = "minor"
+          elif re.match(
+              r"^(fix|docs|chore|ci|style|refactor|test|perf|build)(\(.+\))?:",
+              first_line,
+              re.IGNORECASE,
+          ):
+              forced = "patch"
+
+          if forced is None:
+              # Size heuristic:
+              # - docs/CI/assets-only => patch
+              # - large code churn => minor
+              # - otherwise patch
+              only_meta = bool(files) and not code_files and not other_files
+              large = (
+                  len(code_files) >= 8
+                  or lines >= 200
+                  or (len(code_files) >= 3 and lines >= 80)
+              )
+              if only_meta:
+                  bump = "patch"
+              elif large:
+                  bump = "minor"
+              else:
+                  bump = "patch"
+          else:
+              bump = forced
+
+          if bump == "minor":
+              minor += 1
+              patch = 0
+          else:
+              patch += 1
+
+          # Keep major at 0 until a human publishes v1.0.0.
+          if major >= 1:
+              # After 1.x is published manually, continue auto patch/minor on 1.x.
+              pass
+
+          next_tag = f"v{major}.{minor}.{patch}"
+          if current == next_tag:
+              print(f"skip: HEAD already tagged as {current}")
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write("tagged=false\n")
+                  output.write(f"tag={current}\n")
+                  output.write("bump=exists\n")
+              sys.exit(0)
+
+          # If HEAD already has any tag, do not retag the same commit.
+          head = run(["git", "rev-parse", "HEAD"])
+          existing = run(["git", "tag", "--points-at", "HEAD"])
+          if existing:
+              print(f"skip: HEAD already has tag(s): {existing}")
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write("tagged=false\n")
+                  output.write(f"tag={existing.splitlines()[0]}\n")
+                  output.write("bump=exists\n")
+              sys.exit(0)
+
+          summary = (
+              f"base={base} files={len(files)} code={len(code_files)} "
+              f"meta={len(meta_files)} lines=+{added}/-{deleted} total={lines} "
+              f"bump={bump} -> {next_tag}"
+          )
+          print(summary)
+          Path("tag-reason.txt").write_text(summary + "\n", encoding="utf-8")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write("tagged=true\n")
+              output.write(f"tag={next_tag}\n")
+              output.write(f"bump={bump}\n")
+              output.write(f"base={base}\n")
+          PY
+
+      - name: Create annotated tag
+        if: steps.bump.outputs.tagged == 'true'
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
+          BUMP: ${{ steps.bump.outputs.bump }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          reason="$(cat tag-reason.txt)"
+          git tag -a "$TAG" -m "Apksule ${TAG} (auto ${BUMP})
+
+          ${reason}
+
+          major (v1.0.0+) only via manual tag."
+          git push origin "$TAG"
+          echo "Pushed ${TAG}"
+
+      - name: Trigger Release workflow
+        if: steps.bump.outputs.tagged == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.bump.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # GITHUB_TOKEN tag pushes do not chain-trigger workflows; dispatch explicitly.
+          gh workflow run Release --repo "${{ github.repository }}" --ref "$TAG" -f "tag=$TAG"
+          echo "Dispatched Release for ${TAG}"
