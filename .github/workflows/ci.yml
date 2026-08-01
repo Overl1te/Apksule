@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   windows:
-    name: Windows build / test / installer
+    name: Windows: сборка / тесты / установщик
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -61,11 +61,11 @@ jobs:
             dist/apksule-avatar.png
           if-no-files-found: error
 
-  # Self-hosted Ubuntu runner (192.168.0.133). Confirms the repo-bound runner is
-  # online and validates the Rust workspace on Linux (library crates only —
-  # the Windows host GUI stack is exercised by the windows job).
+  # Self-hosted Ubuntu runner. Проверяет, что runner онлайн, и валидирует
+  # Rust workspace на Linux (только library-crate'ы — GUI Windows-хоста
+  # проверяется job'ом windows).
   self-hosted-linux:
-    name: Self-hosted Linux check
+    name: Self-hosted Linux: проверка
     runs-on: [self-hosted, linux, x64, apksule]
     timeout-minutes: 30
     steps:

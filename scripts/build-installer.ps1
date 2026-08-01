@@ -1,5 +1,5 @@
-# Build Apksule release binary + Inno Setup installer.
-# Usage: .\scripts\build-installer.ps1 [-SkipBuild] [-Version 0.1.1]
+# Сборка release-бинарника Apksule и установщика Inno Setup.
+# Использование: .\scripts\build-installer.ps1 [-SkipBuild] [-Version 0.1.1]
 
 [CmdletBinding()]
 param(

@@ -1,5 +1,5 @@
-; Apksule Windows installer
-; Builds a single-file setup with .apk file association and context menu.
+; Установщик Apksule для Windows
+; Один setup-файл с ассоциацией .apk и пунктом контекстного меню.
 
 #define MyAppName "Apksule"
 #ifndef MyAppVersion
@@ -48,18 +48,18 @@ ChangesAssociations=yes
 MinVersion=10.0
 VersionInfoVersion={#MyAppVersion}.0
 VersionInfoCompany={#MyAppPublisher}
-VersionInfoDescription={#MyAppName} installer
+VersionInfoDescription=Установщик {#MyAppName}
 VersionInfoProductName={#MyAppName}
 VersionInfoProductVersion={#MyAppVersion}
 
 [Languages]
-Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
+Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "fileassoc"; Description: "Associate .apk files with Apksule (open on double-click)"; GroupDescription: "Integration:"; Flags: checkedonce
-Name: "contextmenu"; Description: "Add ""Open with Apksule"" to the .apk context menu"; GroupDescription: "Integration:"; Flags: checkedonce
+Name: "fileassoc"; Description: "Ассоциировать файлы .apk с Apksule (открытие двойным кликом)"; GroupDescription: "Интеграция:"; Flags: checkedonce
+Name: "contextmenu"; Description: "Добавить «Открыть в Apksule» в контекстное меню .apk"; GroupDescription: "Интеграция:"; Flags: checkedonce
 
 [Files]
 Source: "{#SourceDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
@@ -74,18 +74,18 @@ Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\apksule.ico"; Tasks: desktopicon
 
 [Registry]
-; ProgID for Apksule
-Root: HKCR; Subkey: "Apksule.APK"; ValueType: string; ValueName: ""; ValueData: "Android Package (Apksule)"; Flags: uninsdeletekey; Tasks: fileassoc contextmenu
+; ProgID для Apksule
+Root: HKCR; Subkey: "Apksule.APK"; ValueType: string; ValueName: ""; ValueData: "Пакет Android (Apksule)"; Flags: uninsdeletekey; Tasks: fileassoc contextmenu
 Root: HKCR; Subkey: "Apksule.APK\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\apksule.ico,0"; Tasks: fileassoc contextmenu
-Root: HKCR; Subkey: "Apksule.APK\shell\open"; ValueType: string; ValueName: ""; ValueData: "Open with Apksule"; Tasks: fileassoc
+Root: HKCR; Subkey: "Apksule.APK\shell\open"; ValueType: string; ValueName: ""; ValueData: "Открыть в Apksule"; Tasks: fileassoc
 Root: HKCR; Subkey: "Apksule.APK\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: fileassoc
 
-; Make .apk open with Apksule by default
+; Открывать .apk через Apksule по умолчанию
 Root: HKCR; Subkey: ".apk"; ValueType: string; ValueName: ""; ValueData: "Apksule.APK"; Flags: uninsdeletevalue; Tasks: fileassoc
 Root: HKCR; Subkey: ".apk\OpenWithProgids"; ValueType: string; ValueName: "Apksule.APK"; ValueData: ""; Flags: uninsdeletevalue; Tasks: fileassoc contextmenu
 
-; Explicit context-menu verb for .apk (works even if another ProgID owns the extension)
-Root: HKCR; Subkey: "SystemFileAssociations\.apk\shell\Apksule"; ValueType: string; ValueName: ""; ValueData: "Open with Apksule"; Flags: uninsdeletekey; Tasks: contextmenu
+; Явный глагол контекстного меню для .apk (даже если расширение принадлежит другому ProgID)
+Root: HKCR; Subkey: "SystemFileAssociations\.apk\shell\Apksule"; ValueType: string; ValueName: ""; ValueData: "Открыть в Apksule"; Flags: uninsdeletekey; Tasks: contextmenu
 Root: HKCR; Subkey: "SystemFileAssociations\.apk\shell\Apksule"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\apksule.ico"; Tasks: contextmenu
 Root: HKCR; Subkey: "SystemFileAssociations\.apk\shell\Apksule\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: contextmenu
 

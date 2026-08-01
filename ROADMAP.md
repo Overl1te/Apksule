@@ -1,96 +1,96 @@
-# Apksule compatibility roadmap
+# Дорожная карта совместимости Apksule
 
-The roadmap is intentionally app-driven. Each milestone adds only the Android
-surface required by the current reference APK and keeps unsupported behavior
-observable.
+Дорожная карта ориентирована на приложения. Каждая веха добавляет только ту
+поверхность Android, которая нужна текущему эталонному APK, а неподдерживаемое
+поведение остаётся наблюдаемым.
 
-## M1 — APK-to-window pipeline
+## M1 — конвейер «APK → окно»
 
-- [x] Native APK picker and direct path launch
-- [x] ZIP indexing without extraction
-- [x] Binary AndroidManifest.xml parsing
-- [x] Package, component, permission, SDK, DEX, and resource inventory
-- [x] Dedicated software-rendered window
-- [x] Activity lifecycle state machine
-- [x] Pointer and keyboard input translation
-- [x] Context, raw resources, and per-package storage
-- [x] GMS detection and deterministic stubs
-- [x] Unsupported API log
-- [x] `DexRuntime` seam and explicit M1 stub
+- [x] Нативный выбор APK и запуск по пути
+- [x] Индексация ZIP без распаковки
+- [x] Разбор бинарного AndroidManifest.xml
+- [x] Инвентарь пакета, компонентов, permissions, SDK, DEX и ресурсов
+- [x] Отдельное окно с программной отрисовкой
+- [x] Конечный автомат lifecycle Activity
+- [x] Перевод pointer и клавиатуры
+- [x] Context, сырые ресурсы и хранилище на пакет
+- [x] Обнаружение GMS и детерминированные заглушки
+- [x] Журнал неподдержанных API
+- [x] Шов `DexRuntime` и явная заглушка M1
 
-## M2 — Minimal Rust DEX interpreter
+## M2 — минимальный интерпретатор DEX на Rust
 
-Goal: execute a purpose-built, dependency-free test APK before attempting
-Notally.
+Цель: исполнить специально собранный тестовый APK без зависимостей, прежде чем
+браться за Notally.
 
-- [ ] Parse DEX header, map, string/type/proto/field/method/class tables
-- [ ] Validate checksums, section bounds, and instruction offsets
-- [ ] Implement register frames and method invocation
-- [ ] Implement the initial opcode set:
-  - constants, moves, returns, branches, comparisons
+- [ ] Разбор заголовка DEX, map, таблиц string/type/proto/field/method/class
+- [ ] Проверка checksum, границ секций и смещений инструкций
+- [ ] Регистровые фреймы и вызов методов
+- [ ] Начальный набор опкодов:
+  - константы, moves, returns, ветвления, сравнения
   - instance/static fields
-  - object and array allocation/access
+  - выделение и доступ к объектам и массивам
   - invoke virtual/direct/static/interface
-  - integer arithmetic and conversions
-  - exception tables and `throw`
-- [ ] Implement class loading, initialization, inheritance, and virtual dispatch
-- [ ] Add deterministic instruction/time/heap limits
-- [ ] Bridge selected Java core classes (`Object`, `String`, collections)
-- [ ] Route unresolved native/framework methods through `ApiLogger`
-- [ ] Run a Rust fixture suite generated from documented DEX byte sequences
-- [ ] Launch a minimal open-source test APK and execute its `Activity.onCreate`
+  - целочисленная арифметика и преобразования
+  - таблицы исключений и `throw`
+- [ ] Загрузка классов, инициализация, наследование и виртуальный диспетч
+- [ ] Детерминированные лимиты инструкций/времени/кучи
+- [ ] Мост к выбранным Java core (`Object`, `String`, коллекции)
+- [ ] Неразрешённые native/framework-методы через `ApiLogger`
+- [ ] Набор fixture на Rust из документированных последовательностей байт DEX
+- [ ] Запуск минимального open-source тестового APK и исполнение `Activity.onCreate`
 
-Exit criterion: a small APK executes its own DEX code and reaches a framework
-method through the compatibility bridge.
+Критерий выхода: небольшой APK исполняет свой DEX и доходит до framework-метода
+через мост совместимости.
 
-## M3 — Android UI and resource subset
+## M3 — подмножество Android UI и ресурсов
 
-Goal: let a simple APK draw and interact with its own UI in the Apksule window.
+Цель: простой APK рисует и обрабатывает свой UI в окне Apksule.
 
-- [ ] Decode the needed `resources.arsc` table chunks and configurations
-- [ ] Resolve resource IDs, strings, colors, dimensions, styles, and drawables
-- [ ] Inflate binary layout XML
-- [ ] Implement a minimal View tree (`View`, `ViewGroup`, `TextView`,
-      `EditText`, `Button`, linear/frame/constraint subset)
-- [ ] Implement measure/layout/draw and invalidation scheduling
-- [ ] Send translated MotionEvent/KeyEvent objects into View dispatch
-- [ ] Add focus, text input, clipboard, and minimal IME delegation
-- [ ] Implement Activity `setContentView` and Window/DecorView bridge
-- [ ] Add bitmap and vector drawable subsets
-- [ ] Replace the M1 diagnostic surface as soon as the APK submits its first frame
+- [ ] Декодирование нужных chunk’ей `resources.arsc` и конфигураций
+- [ ] Разрешение resource ID, строк, цветов, размеров, стилей и drawable
+- [ ] Инфляция бинарного layout XML
+- [ ] Минимальное дерево View (`View`, `ViewGroup`, `TextView`,
+      `EditText`, `Button`, подмножество linear/frame/constraint)
+- [ ] measure/layout/draw и планирование invalidation
+- [ ] Доставка MotionEvent/KeyEvent в dispatch View
+- [ ] Фокус, ввод текста, буфер обмена и минимальная делегация IME
+- [ ] Мост Activity `setContentView` и Window/DecorView
+- [ ] Подмножество bitmap и vector drawable
+- [ ] Убрать диагностическую поверхность M1, как только APK отдаст первый кадр
 
-Exit criterion: the test APK owns every visible pixel after launch and supports
-basic click and text-input interaction.
+Критерий выхода: тестовый APK владеет всеми видимыми пикселями после запуска и
+поддерживает базовый клик и ввод текста.
 
-## M4 — Notally compatibility slice
+## M4 — срез совместимости Notally
 
-Goal: render and use the basic note list/editor path of Notally; unsupported
-features must fail gracefully.
+Цель: отрисовать и использовать базовый путь списка/редактора заметок Notally;
+неподдержанные возможности должны мягко отказывать.
 
-- [ ] Inventory Notally's actually reached AndroidX/Material APIs from logs
-- [ ] Implement the required AndroidX lifecycle/fragment subset
-- [ ] Add RecyclerView behavior needed by the note list
-- [ ] Add a Material widget/style subset only where reached
-- [ ] Implement SharedPreferences
-- [ ] Implement SQLite operations and the minimum Room-generated call surface
-- [ ] Add ContentProvider/file URI handling for local attachments
-- [ ] Add timers, Handler/Looper, and simple background task dispatch
-- [ ] Stub reminders, widgets, PDF export, audio, and unsupported media paths
-- [ ] Add golden screenshots and scripted note create/edit/delete tests
+- [ ] Инвентарь реально достигнутых AndroidX/Material API по логам
+- [ ] Нужное подмножество AndroidX lifecycle/fragment
+- [ ] Поведение RecyclerView для списка заметок
+- [ ] Подмножество Material-виджетов/стилей только там, где дошли
+- [ ] SharedPreferences
+- [ ] Операции SQLite и минимум поверхности Room
+- [ ] ContentProvider / file URI для локальных вложений
+- [ ] Таймеры, Handler/Looper и простой фоновый dispatch
+- [ ] Заглушки напоминаний, виджетов, PDF, аудио и неподдержанных медиа-путей
+- [ ] Golden-скриншоты и скриптовые тесты create/edit/delete заметки
 
-Exit criterion: Notally starts, displays its own list/editor UI, and persists a
-basic text note across launches.
+Критерий выхода: Notally стартует, показывает свой UI списка/редактора и
+сохраняет простую текстовую заметку между запусками.
 
-## Later milestones
+## Поздние вехи
 
-- [ ] Broaden DEX opcodes and verifier behavior from real compatibility traces
-- [ ] Multi-dex class loading and split APK metadata
-- [ ] More resource qualifiers, locales, density handling, and themes
-- [ ] Networking behind an explicit permission and policy boundary
-- [ ] Optional JIT/AOT experiments only after interpreter correctness
-- [ ] Crash reports containing lifecycle, API-miss, and bytecode traces
-- [ ] Per-app compatibility profiles without coupling them to host UI
+- [ ] Расширение опкодов DEX и verifier по реальным трассам совместимости
+- [ ] Multi-dex и метаданные split APK
+- [ ] Больше квалификаторов ресурсов, локалей, плотности и тем
+- [ ] Сеть за явным permission и политикой
+- [ ] Опциональные JIT/AOT только после корректности интерпретатора
+- [ ] Отчёты о сбоях с lifecycle, API-miss и трассами байткода
+- [ ] Профили совместимости на приложение без привязки к UI хоста
 
-Non-goals remain unchanged: no virtual Android device, Linux kernel emulation,
-Android system image, Google Play installation, or hidden delegation to an
-existing Android emulator.
+Не-цели без изменений: нет виртуального Android-устройства, эмуляции ядра Linux,
+образа системы Android, установки Google Play и скрытой делегации существующему
+эмулятору Android.

@@ -1,109 +1,107 @@
 # Apksule
 
-Apksule is a Windows-first, Rust-only experiment for running Android APKs in a
-small compatibility runtime. It is not an Android emulator: there is no virtual
-device, Android system image, ADB server, or bundled third-party Android runtime.
+Apksule — эксперимент для Windows: лёгкий runtime совместимости Android APK
+только на Rust. Это **не** эмулятор Android: нет виртуального устройства,
+образа системы, ADB и стороннего Android runtime.
 
-The M1 MVP implements the launch pipeline around DEX execution:
+MVP этапа M1 собирает конвейер запуска вокруг будущего исполнения DEX:
 
-1. choose an APK with the native Windows file picker;
-2. inspect the ZIP without extracting it;
-3. decode binary `AndroidManifest.xml`;
-4. create an isolated per-package context;
-5. open a dedicated software-rendered window;
-6. deliver Activity lifecycle and translated input events to the DEX boundary;
-7. record unsupported Android API calls.
+1. выбрать APK через нативный диалог Windows;
+2. просмотреть ZIP без распаковки;
+3. декодировать бинарный `AndroidManifest.xml`;
+4. создать изолированный контекст на пакет;
+5. открыть отдельное окно с программной отрисовкой;
+6. передать lifecycle Activity и события ввода к границе DEX;
+7. журналировать неподдерживаемые вызовы Android API.
 
-M1 deliberately uses a `StubDexRuntime`. It proves the APK-to-window pipeline,
-but it does **not** execute `classes.dex` and therefore cannot render Notally's
-actual Android UI yet. A Rust DEX interpreter is the M2 milestone.
+В M1 используется `StubDexRuntime`: он доказывает путь «APK → окно», но
+**не** исполняет `classes.dex` и поэтому ещё не рисует настоящий UI Notally.
+Интерпретатор DEX на Rust — веха M2.
 
-## Architecture
+## Архитектура
 
 ```text
 apksule.exe
-  native file picker
+  нативный выбор файла
         |
         v
 apksule-apk
-  ZIP index -> AXML manifest -> package metadata/resources
+  индекс ZIP -> манифест AXML -> метаданные пакета/ресурсы
         |
         v
-apksule-runtime ----------------------+
-  Activity lifecycle                   |
-  winit event loop                     v
-  softbuffer/tiny-skia surface   apksule-compat
-  input translation              Context / Resources
-  DexRuntime trait               storage / GMS shim
-        |                        unsupported API log
+apksule-runtime ---------------------+
+  lifecycle Activity                  |
+  цикл событий winit                  v
+  поверхность softbuffer/tiny-skia  apksule-compat
+  перевод ввода                     Context / Resources
+  трейт DexRuntime                  хранилище / заглушки GMS
+        |                           журнал неподдержанных API
         v
   StubDexRuntime (M1)
-  Rust DEX interpreter (M2)
+  интерпретатор DEX на Rust (M2)
 ```
 
-The launcher depends on `apksule-apk` and `apksule-runtime`, but never imports
-the compatibility crate directly. Android-like APIs are isolated from host
-logic. The runtime owns the target window and the launcher has no dashboard,
-settings page, or shell screen.
+Лаунчер зависит от `apksule-apk` и `apksule-runtime`, но **не** импортирует
+crate совместимости напрямую. Android-подобные API отделены от логики хоста.
+Окно цели принадлежит runtime; у лаунчера нет дашборда, настроек и оболочки.
 
 ## Workspace
 
-- `crates/apksule` — the only executable; picker and launch handoff.
-- `crates/apksule-apk` — APK ZIP index, AXML manifest parser, raw entry loader.
-- `crates/apksule-runtime` — window, renderer, lifecycle, input, DEX boundary.
-- `crates/apksule-compat` — Context, resources, storage, GMS stubs, API logging.
-- `ROADMAP.md` — compatibility milestones and concrete TODOs.
+- `crates/apksule` — единственный executable: выбор файла и запуск.
+- `crates/apksule-apk` — индекс ZIP APK, парсер AXML, загрузка сырых entry.
+- `crates/apksule-runtime` — окно, рендер, lifecycle, ввод, граница DEX.
+- `crates/apksule-compat` — Context, ресурсы, хранилище, заглушки GMS, лог API.
+- `ROADMAP.md` — вехи совместимости и конкретные TODO.
 
-## Requirements
+## Требования
 
-- Windows 10 or 11
-- Rust 1.96 or newer with the MSVC toolchain
+- Windows 10 или 11
+- Rust 1.96+ с toolchain MSVC
 
-No Android SDK, emulator, Java, C++, C#, Python, or Electron is required.
+Android SDK, эмулятор, Java, C++, C#, Python и Electron не нужны.
 
-## Build and run
+## Сборка и запуск
 
 ```powershell
 cargo build --release
 cargo run -p apksule
 ```
 
-Running without arguments opens the native APK picker. For repeatable testing:
+Без аргументов открывается нативный выбор APK. Для повторяемых тестов:
 
 ```powershell
 cargo run -p apksule -- "C:\path\to\application.apk"
 cargo run -p apksule -- --inspect "C:\path\to\application.apk"
 ```
 
-The release executable is `target\release\apksule.exe`.
+Release-сборка: `target\release\apksule.exe`.
 
-## Windows installer
+## Установщик Windows
 
-Build the branded installer (requires [Inno Setup 6](https://jrsoftware.org/isinfo.php)):
+Сборка брендированного установщика (нужен [Inno Setup 6](https://jrsoftware.org/isinfo.php)):
 
 ```powershell
 .\scripts\build-installer.ps1
 ```
 
-Artifacts land in `dist\`:
+Артефакты в `dist\`:
 
-- `Apksule-Setup-0.1.0.exe` — full installer
-- `apksule.exe` — portable copy of the release binary
+- `Apksule-Setup-0.1.0.exe` — полный установщик
+- `apksule.exe` — портативная копия release-бинарника
 
-Installer options (enabled by default):
+Опции установщика (по умолчанию включены):
 
-- associate `.apk` with Apksule so double-click opens the runtime window;
-- add **Open with Apksule** to the `.apk` context menu.
+- ассоциация `.apk` с Apksule (двойной клик открывает окно runtime);
+- пункт **Открыть в Apksule** в контекстном меню `.apk`.
 
-## Auto-update
+## Автообновление
 
-On startup Apksule silently checks GitHub Releases and, when a newer build
-exists, replaces files **in the installed application folder** (the directory
-of the running `apksule.exe`).
+При старте Apksule тихо проверяет GitHub Releases и при наличии новой сборки
+заменяет файлы **в папке установленного приложения** (каталог текущего
+`apksule.exe`).
 
-It downloads only the portable `apksule-windows-x64.exe` (plus `apksule.ico`
-when present). It does **not** download or run the Inno Setup installer for
-updates.
+Скачивается только портативный `apksule-windows-x64.exe` (и `apksule.ico`,
+если есть). Установщик Inno Setup для обновлений **не** используется.
 
 ```powershell
 apksule --check-update
@@ -112,45 +110,44 @@ apksule --no-update .\app.apk
 $env:APKSULE_NO_UPDATE = "1"
 ```
 
-If the install folder is under Program Files and not writable, Apksule schedules
-a deferred in-place copy (UAC may appear once), then relaunches. Update failures
-never block APK launch.
+Если папка установки (например Program Files) недоступна для записи, Apksule
+планирует отложенную замену на месте (один раз может появиться UAC) и
+перезапускается. Сбой обновления не блокирует запуск APK.
 
-## CI / Releases
+## CI / релизы
 
 GitHub Actions:
 
-- `CI` — Windows test/clippy/release build + Inno Setup packaging; Linux
-  self-hosted runner validates library crates.
-- `Auto Tag` — on every push to `master`/`main`, creates the next semver tag
-  and dispatches `Release`.
-- `Release` — on `v*` tags (or manual dispatch) publishes Windows assets to
-  GitHub Releases with checksums and release notes.
+- `CI` — тесты/clippy/release-сборка Windows + Inno Setup; self-hosted Linux
+  проверяет library-crate’ы.
+- `Auto Tag` — при каждом пуше в `master`/`main` создаёт следующий semver-тег
+  и запускает `Release`.
+- `Release` — по тегам `v*` (или вручную) публикует Windows-артефакты в
+  GitHub Releases с checksum и описанием.
 
-### Auto versioning
+### Автоверсия
 
-Tags are computed from the previous `vX.Y.Z` and the size/intent of the change:
+Тег считается от предыдущего `vX.Y.Z` и размера/смысла изменений:
 
-| Bump | Result | When |
-|------|--------|------|
-| patch | `v0.1.0` → `v0.1.1` | small / docs / CI / `fix:` |
-| minor | `v0.1.1` → `v0.2.0` | large code churn / `feat:` |
-| major | `v1.0.0` | **manual only** |
+| Шаг | Результат | Когда |
+|------|-----------|--------|
+| patch | `v0.1.0` → `v0.1.1` | мелочи / доки / CI / `fix:` |
+| minor | `v0.1.1` → `v0.2.0` | крупный код / `feat:` |
+| major | `v1.0.0` | **только вручную** |
 
-Overrides in the commit message:
+Переопределения в сообщении коммита:
 
-- `[patch]` / `bump:patch` — force patch
-- `[minor]` / `bump:minor` — force minor
-- `[no-tag]` / `[skip-tag]` — skip tagging
-- `[major]` / `bump:major` — ignored (create `v1.0.0` yourself)
+- `[patch]` / `bump:patch` — принудительный patch
+- `[minor]` / `bump:minor` — принудительный minor
+- `[no-tag]` / `[skip-tag]` — без тега
+- `[major]` / `bump:major` — игнорируется (создайте `v1.0.0` сами)
 
-Major stays manual on purpose: publish `v1.0.0` with
-`git tag -a v1.0.0 -m "..." && git push origin v1.0.0` when you decide the
-project is out of 0.x.
+Major намеренно ручной: когда проект выходит из 0.x —
+`git tag -a v1.0.0 -m "..." && git push origin v1.0.0`.
 
-### First reference APK: Notally
+### Первый эталонный APK: Notally
 
-Notally 6.2 from F-Droid is the M1 reference:
+Эталон M1 — Notally 6.2 с F-Droid:
 
 ```powershell
 $apk = "$env:TEMP\Notally.apk"
@@ -161,15 +158,14 @@ cargo run -p apksule -- --inspect $apk
 cargo run -p apksule -- $apk
 ```
 
-Expected M1 inspection values include package
-`com.omgodse.notally`, launcher activity
-`com.omgodse.notally.activities.MainActivity`, one DEX file, and a compiled
-resource table. The window then shows the temporary M1 launch surface. It is a
-runtime diagnostic surface, not a reimplementation of Notally's UI.
+Ожидаемые значения inspection: пакет `com.omgodse.notally`, launcher activity
+`com.omgodse.notally.activities.MainActivity`, один DEX и скомпилированная
+таблица ресурсов. Затем окно показывает временную поверхность запуска M1 —
+диагностика runtime, а не UI Notally.
 
-## Storage and logs
+## Хранилище и логи
 
-Each package receives a sandbox:
+У каждого пакета своя песочница:
 
 ```text
 %APPDATA%\Apksule\apps\<package>\
@@ -179,25 +175,25 @@ Each package receives a sandbox:
   logs\unsupported-api.log
 ```
 
-Relative storage paths reject root and parent traversal. Every compatibility
-stub records class, method, timestamp, and fallback detail in
-`unsupported-api.log`; the same event is emitted through `tracing`.
+Относительные пути хранилища отклоняют корень и выход через `..`. Каждая
+заглушка совместимости пишет класс, метод, время и деталь fallback в
+`unsupported-api.log`; то же событие уходит в `tracing`.
 
-## Current compatibility surface
+## Текущая поверхность совместимости
 
-- APK ZIP metadata and on-demand raw entry loading
-- binary AXML and plain XML manifest decoding
-- launcher Activity, components, permissions, SDK and version metadata
-- `Created -> Started -> Resumed -> Paused -> Stopped -> Destroyed` lifecycle
-- pointer, wheel, and keyboard event translation
-- raw `assets/`, `res/`, and `resources.arsc` access
-- per-package files/cache/databases/log directories
-- Google Play Services reference detection and deterministic stub responses
-- software-rendered target window through `winit`, `softbuffer`, and `tiny-skia`
+- метаданные ZIP APK и загрузка сырых entry по требованию
+- декодирование бинарного AXML и обычного XML-манифеста
+- launcher Activity, компоненты, permissions, SDK и версия
+- lifecycle `Created -> Started -> Resumed -> Paused -> Stopped -> Destroyed`
+- перевод pointer, wheel и клавиатуры
+- сырой доступ к `assets/`, `res/` и `resources.arsc`
+- каталоги files/cache/databases/log на пакет
+- обнаружение Google Play Services и детерминированные заглушки
+- окно цели через `winit`, `softbuffer` и `tiny-skia`
 
-See [ROADMAP.md](ROADMAP.md) for the DEX and Android UI work required to render
-the APK's own interface.
+DEX и Android UI для отрисовки интерфейса самого APK — в
+[ROADMAP.md](ROADMAP.md).
 
-## License
+## Лицензия
 
-Licensed under either Apache-2.0 or MIT, at your option.
+На выбор: Apache-2.0 или MIT.

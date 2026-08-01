@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   tag:
-    name: Compute and push semver tag
+    name: Вычислить и запушить semver-тег
     runs-on: ubuntu-latest
     # Skip tag-push recursion and bot-only noise.
     if: ${{ !startsWith(github.event.head_commit.message, 'chore(release)') }}
@@ -128,7 +128,6 @@ jobs:
               "LICENSE-",
               "rustfmt.toml",
               ".gitignore",
-              "scripts/setup_runner.py",
               "scripts/auto_version",
           )
 
@@ -236,11 +235,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           reason="$(cat tag-reason.txt)"
-          git tag -a "$TAG" -m "Apksule ${TAG} (auto ${BUMP})
+          git tag -a "$TAG" -m "Apksule ${TAG} (авто ${BUMP})
 
           ${reason}
 
-          major (v1.0.0+) only via manual tag."
+          major (v1.0.0+) только вручную."
           git push origin "$TAG"
           echo "Pushed ${TAG}"
 

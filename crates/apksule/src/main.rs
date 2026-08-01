@@ -33,10 +33,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             print_package(&package);
         }
         Command::CheckUpdate => match check_for_update()? {
-            None => println!("Apksule {} is up to date.", current_version()),
+            None => println!("Apksule {} уже актуален.", current_version()),
             Some(update) => {
                 println!(
-                    "Update available: {} -> {} ({})",
+                    "Доступно обновление: {} → {} ({})",
                     update.current, update.latest, update.tag
                 );
                 println!("{}", update.html_url);
@@ -46,10 +46,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             let args = relaunch_args_after_update();
             match check_and_update(&args)? {
                 UpdateOutcome::UpToDate { current } => {
-                    println!("Apksule {current} is already up to date.");
+                    println!("Apksule {current} уже актуален.");
                 }
                 UpdateOutcome::Updated { from, to } => {
-                    println!("Updated Apksule {from} -> {to}.");
+                    println!("Apksule обновлён: {from} → {to}.");
                 }
             }
         }
@@ -111,19 +111,22 @@ fn launch(path: &Path) -> Result<(), Box<dyn Error>> {
 
 fn print_package(package: &ApkPackage) {
     println!("APK: {}", package.source_path.display());
-    println!("Package: {}", package.package_name);
+    println!("Пакет: {}", package.package_name);
     println!(
-        "Version: {} ({})",
-        package.version.name.as_deref().unwrap_or("unknown"),
-        package.version.code.map_or_else(|| "unknown".to_owned(), |code| code.to_string())
+        "Версия: {} ({})",
+        package.version.name.as_deref().unwrap_or("неизвестно"),
+        package.version.code.map_or_else(|| "неизвестно".to_owned(), |code| code.to_string())
     );
-    println!("Main activity: {}", package.main_activity.as_deref().unwrap_or("not declared"));
+    println!(
+        "Главная activity: {}",
+        package.main_activity.as_deref().unwrap_or("не объявлена")
+    );
     println!("Activities: {}", package.activities.len());
-    println!("Permissions: {}", package.permissions.len());
-    println!("DEX files: {}", package.resources.dex_entries.len());
+    println!("Разрешения: {}", package.permissions.len());
+    println!("DEX-файлы: {}", package.resources.dex_entries.len());
     println!(
         "resources.arsc: {}",
-        if package.resources.has_resource_table { "present" } else { "missing" }
+        if package.resources.has_resource_table { "есть" } else { "нет" }
     );
 }
 
@@ -211,17 +214,17 @@ fn command_from_positional(positional: Vec<std::ffi::OsString>) -> Result<Comman
 }
 
 fn print_help() {
-    println!("Apksule {} - lightweight APK compatibility runtime", current_version());
+    println!("Apksule {} — лёгкий runtime совместимости APK", current_version());
     println!();
-    println!("USAGE:");
-    println!("  apksule                    Choose an APK using the native picker");
-    println!("  apksule <path.apk>         Inspect and open an APK runtime window");
-    println!("  apksule --inspect <apk>    Print manifest/runtime metadata and exit");
-    println!("  apksule --check-update     Check GitHub Releases for a newer build");
-    println!("  apksule --update           Download and install the latest build now");
-    println!("  apksule --no-update ...    Skip the automatic update check");
-    println!("  apksule --version          Print the embedded version");
+    println!("ИСПОЛЬЗОВАНИЕ:");
+    println!("  apksule                    Выбрать APK через нативный диалог");
+    println!("  apksule <path.apk>         Разобрать APK и открыть окно runtime");
+    println!("  apksule --inspect <apk>    Вывести метаданные манифеста и выйти");
+    println!("  apksule --check-update     Проверить GitHub Releases на новую сборку");
+    println!("  apksule --update           Скачать и установить последнюю сборку сейчас");
+    println!("  apksule --no-update ...    Пропустить автоматическую проверку обновлений");
+    println!("  apksule --version          Показать встроенную версию");
     println!();
-    println!("Auto-update replaces apksule.exe in the install folder (not via Inno).");
-    println!("Disable with --no-update, APKSULE_SKIP_UPDATE=1, or APKSULE_NO_UPDATE=1.");
+    println!("Автообновление заменяет apksule.exe в папке установки (без Inno).");
+    println!("Отключить: --no-update, APKSULE_SKIP_UPDATE=1 или APKSULE_NO_UPDATE=1.");
 }
