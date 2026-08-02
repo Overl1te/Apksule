@@ -10,6 +10,7 @@ pub struct AppStorage {
     files: PathBuf,
     cache: PathBuf,
     databases: PathBuf,
+    shared_prefs: PathBuf,
     logs: PathBuf,
 }
 
@@ -28,6 +29,7 @@ impl AppStorage {
             files: root.join("files"),
             cache: root.join("cache"),
             databases: root.join("databases"),
+            shared_prefs: root.join("shared_prefs"),
             logs: root.join("logs"),
             root,
         };
@@ -36,7 +38,8 @@ impl AppStorage {
     }
 
     fn ensure_layout(&self) -> Result<()> {
-        for path in [&self.files, &self.cache, &self.databases, &self.logs] {
+        for path in [&self.files, &self.cache, &self.databases, &self.shared_prefs, &self.logs]
+        {
             std::fs::create_dir_all(path)
                 .map_err(|source| CompatError::Io { path: path.clone(), source })?;
         }
@@ -64,8 +67,17 @@ impl AppStorage {
     }
 
     #[must_use]
+    pub fn shared_prefs_dir(&self) -> &Path {
+        &self.shared_prefs
+    }
+
+    #[must_use]
     pub fn logs_dir(&self) -> &Path {
         &self.logs
+    }
+
+    pub fn resolve_shared_prefs(&self, relative_path: impl AsRef<Path>) -> Result<PathBuf> {
+        secure_join(&self.shared_prefs, relative_path.as_ref())
     }
 
     pub fn resolve_file(&self, relative_path: impl AsRef<Path>) -> Result<PathBuf> {

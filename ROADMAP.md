@@ -70,19 +70,20 @@
 Цель: отрисовать и использовать базовый путь списка/редактора заметок Notally;
 неподдержанные возможности должны мягко отказывать.
 
-- [ ] Инвентарь реально достигнутых AndroidX/Material API по логам
-- [ ] Нужное подмножество AndroidX lifecycle/fragment
-- [ ] Поведение RecyclerView для списка заметок
-- [ ] Подмножество Material-виджетов/стилей только там, где дошли
-- [ ] SharedPreferences
-- [ ] Операции SQLite и минимум поверхности Room
+- [x] Инвентарь реально достигнутых AndroidX/Material API по логам
+- [x] Нужное подмножество AndroidX lifecycle/fragment (soft-stub + setContentView)
+- [x] Поведение RecyclerView для списка заметок
+- [x] Подмножество Material-виджетов/стилей только там, где дошли (alias inflate)
+- [x] SharedPreferences
+- [x] Операции SQLite и минимум поверхности Room
 - [ ] ContentProvider / file URI для локальных вложений
-- [ ] Таймеры, Handler/Looper и простой фоновый dispatch
-- [ ] Заглушки напоминаний, виджетов, PDF, аудио и неподдержанных медиа-путей
-- [ ] Golden-скриншоты и скриптовые тесты create/edit/delete заметки
+- [x] Таймеры, Handler/Looper и простой фоновый dispatch
+- [x] Заглушки напоминаний, виджетов, PDF, аудио и неподдержанных медиа-путей
+- [x] Golden-скриншоты и скриптовые тесты create/edit/delete заметки
 
 Критерий выхода: Notally стартует, показывает свой UI списка/редактора и
-сохраняет простую текстовую заметку между запусками.
+сохраняет простую текстовую заметку между запусками. Проверка persistence —
+`m4_note_persistence` (SharedPreferences + SQLite BaseNote).
 
 ## Поздние вехи
 

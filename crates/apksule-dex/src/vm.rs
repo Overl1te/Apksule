@@ -2,7 +2,11 @@
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_precision_loss,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    clippy::match_same_arms,
+    clippy::map_unwrap_or,
+    clippy::unnecessary_wraps,
+    clippy::unused_self
 )]
 
 use std::collections::{HashMap, HashSet};
@@ -11,6 +15,9 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
+use crate::java_runtime::{
+    JavaRuntime, ValueKey, is_java_builtin, java_string_hash, receiver_id, value_as_int,
+};
 use crate::{CodeItem, DexError, DexFile, ResolvedMethod};
 
 const ACC_STATIC: u32 = 0x0008;
@@ -101,6 +108,23 @@ pub trait NativeBridge {
         method: &ResolvedMethod,
         arguments: &[Value],
     ) -> Result<NativeResult, VmError>;
+
+    /// Optional UTF-16/heap string arguments resolved by the VM before `invoke`.
+    fn set_arg_strings(&mut self, _strings: Vec<Option<String>>) {}
+
+    /// Soft Null object returns that should become real heap strings.
+    fn take_string_return(&mut self) -> Option<String> {
+        None
+    }
+
+    /// Called after a soft Null object return was materialized into a heap instance.
+    fn on_materialized(
+        &mut self,
+        _method: &ResolvedMethod,
+        _value: &Value,
+        _arguments: &[Value],
+    ) {
+    }
 }
 
 /// Детерминированные ограничения одного верхнеуровневого вызова.
@@ -241,6 +265,7 @@ pub struct Vm {
     initialized_classes: HashSet<u32>,
     initializing_classes: HashSet<u32>,
     native_bridge: Option<Box<dyn NativeBridge>>,
+    java: JavaRuntime,
 }
 
 impl Vm {
@@ -259,6 +284,7 @@ impl Vm {
             initialized_classes: HashSet::new(),
             initializing_classes: HashSet::new(),
             native_bridge: None,
+            java: JavaRuntime::default(),
         }
     }
 
@@ -364,8 +390,14 @@ impl Vm {
         if self.dex.find_class(type_descriptor).is_some() {
             return self.allocate_object(type_descriptor);
         }
-        let type_idx = self.find_type_idx(type_descriptor)?;
-        self.allocate_object_type(type_idx)
+        if let Ok(type_idx) = self.find_type_idx(type_descriptor) {
+            return self.allocate_object_type(type_idx);
+        }
+        // Many framework types are referenced by APK code but never appear as
+        // a concrete class_def / type_id in the primary DEX under test.
+        let reference =
+            self.allocate_heap(HeapEntry::Object { class_idx: 0, fields: HashMap::new() })?;
+        Ok(ObjectRef(reference))
     }
 
     fn find_type_idx(&self, type_descriptor: &str) -> Result<u32, VmError> {
@@ -426,6 +458,49 @@ impl Vm {
         match self.heap.get(usize::try_from(reference.0).ok()?)? {
             HeapEntry::String(value) => Some(value),
             _ => None,
+        }
+    }
+
+    pub fn allocate_string(&mut self, value: impl Into<String>) -> Result<ObjectRef, VmError> {
+        let reference = self.allocate_heap(HeapEntry::String(value.into()))?;
+        Ok(ObjectRef(reference))
+    }
+
+    pub fn java_runtime_mut(&mut self) -> &mut JavaRuntime {
+        &mut self.java
+    }
+
+    pub fn take_posted(&mut self) -> Vec<ObjectRef> {
+        std::mem::take(&mut self.java.posted)
+    }
+
+    pub fn object_type_descriptor(&self, object: ObjectRef) -> Result<String, VmError> {
+        let class_idx = self.object_class(object)?;
+        Ok(self.dex.type_descriptor(class_idx)?.to_owned())
+    }
+
+    #[must_use]
+    pub fn read_string(&self, object: ObjectRef) -> Option<String> {
+        self.heap_string(object)
+    }
+
+    /// Invoke a Java/Android builtin that has no DEX body (M4 String/Looper/Handler surface).
+    pub fn invoke_builtin(
+        &mut self,
+        class_descriptor: &str,
+        name: &str,
+        prototype: &str,
+        arguments: &[Value],
+    ) -> Result<Value, VmError> {
+        let method = ResolvedMethod {
+            index: 0,
+            class_descriptor: class_descriptor.to_owned(),
+            name: name.to_owned(),
+            prototype: prototype.to_owned(),
+        };
+        match self.dispatch_builtin(&method, arguments)? {
+            Some(value) => Ok(value),
+            None => Err(VmError::UnresolvedNative(method)),
         }
     }
 
@@ -863,16 +938,564 @@ impl Vm {
 
     fn invoke_native(&mut self, method_idx: u32, arguments: &[Value]) -> Result<Value, VmError> {
         let resolved = self.dex.resolve_method(method_idx)?;
-        let result = if let Some(bridge) = self.native_bridge.as_mut() {
+        if let Some(value) = self.dispatch_builtin(&resolved, arguments)? {
+            return Ok(value);
+        }
+
+        let arg_strings: Vec<Option<String>> = arguments
+            .iter()
+            .map(|argument| match argument {
+                Value::Reference(HeapRef::Object(object)) => self.heap_string(*object),
+                _ => None,
+            })
+            .collect();
+
+        let mut bridge = self.native_bridge.take();
+        let result = if let Some(ref mut bridge) = bridge {
+            bridge.set_arg_strings(arg_strings);
             bridge.invoke(&resolved, arguments)?
         } else {
             NativeResult::Unresolved
         };
-        match result {
-            NativeResult::Handled(value) => {
-                Ok(self.materialize_soft_object_return(&resolved.prototype, value))
+
+        let handled = match result {
+            NativeResult::Handled(value) => value,
+            NativeResult::Unresolved => {
+                self.native_bridge = bridge;
+                return Err(VmError::UnresolvedNative(resolved));
             }
-            NativeResult::Unresolved => Err(VmError::UnresolvedNative(resolved)),
+        };
+
+        let value = if matches!(handled, Value::Null)
+            && resolved.prototype.rsplit_once(')').is_some_and(|(_, ret)| ret == "Ljava/lang/String;")
+        {
+            let text = bridge
+                .as_mut()
+                .and_then(|bridge| bridge.take_string_return())
+                .unwrap_or_default();
+            Value::Reference(HeapRef::Object(self.allocate_string(text)?))
+        } else {
+            self.materialize_soft_object_return(&resolved.prototype, handled)
+        };
+
+        if let Some(ref mut bridge) = bridge {
+            bridge.on_materialized(&resolved, &value, arguments);
+        }
+        self.native_bridge = bridge;
+        Ok(value)
+    }
+
+    fn dispatch_builtin(
+        &mut self,
+        method: &ResolvedMethod,
+        arguments: &[Value],
+    ) -> Result<Option<Value>, VmError> {
+        if !is_java_builtin(&method.class_descriptor) {
+            return Ok(None);
+        }
+        self.java_native(method, arguments).map(Some)
+    }
+
+    #[allow(
+        clippy::match_same_arms,
+        clippy::map_unwrap_or,
+        clippy::unnecessary_wraps,
+        clippy::unused_self
+    )]
+    #[allow(clippy::too_many_lines)]
+    fn java_native(
+        &mut self,
+        method: &ResolvedMethod,
+        arguments: &[Value],
+    ) -> Result<Value, VmError> {
+        let class = method.class_descriptor.as_str();
+        let name = method.name.as_str();
+        let proto = method.prototype.as_str();
+        match class {
+            "Ljava/lang/String;" => self.java_string(name, arguments),
+            "Ljava/lang/StringBuilder;" | "Ljava/lang/StringBuffer;" => {
+                self.java_string_builder(name, proto, arguments)
+            }
+            "Ljava/util/ArrayList;" | "Ljava/util/concurrent/CopyOnWriteArraySet;" => {
+                self.java_array_list(name, arguments)
+            }
+            "Ljava/util/HashMap;" | "Ljava/util/WeakHashMap;" => self.java_hash_map(name, arguments),
+            "Ljava/util/ArrayDeque;" => self.java_array_deque(name, arguments),
+            "Ljava/util/concurrent/atomic/AtomicInteger;" => {
+                self.java_atomic_int(name, proto, arguments)
+            }
+            "Ljava/util/concurrent/atomic/AtomicReference;" => self.java_atomic_ref(name, arguments),
+            "Ljava/lang/ref/WeakReference;" => self.java_weak_ref(name, arguments),
+            "Ljava/lang/Enum;" => self.java_enum(name, arguments),
+            "Ljava/lang/Thread;" => self.java_thread(name),
+            "Landroid/os/Looper;" => self.java_looper(name),
+            "Ljava/lang/Class;" => self.java_class(name, arguments),
+            "Ljava/lang/System;" if matches!(name, "nanoTime" | "currentTimeMillis") => {
+                Ok(Value::Long(0))
+            }
+            "Ljava/lang/Math;" => self.java_math(name, arguments),
+            "Ljava/util/Objects;" => self.java_objects(name, arguments),
+            "Ljava/util/Random;" => Ok(Value::Null),
+            "Ljava/util/concurrent/Executors;" => self.java_executors(name),
+            "Ljava/util/concurrent/ExecutorService;" | "Ljava/util/concurrent/Executor;" => {
+                self.java_executor_service(name, arguments)
+            }
+            "Landroid/os/Handler;" => self.java_handler(name, arguments),
+            "Landroid/os/Bundle;" => self.java_bundle(name, arguments),
+            _ => Ok(Value::Null),
+        }
+    }
+
+    fn heap_string(&self, object: ObjectRef) -> Option<String> {
+        match self.heap.get(usize::try_from(object.0).ok()?)? {
+            HeapEntry::String(value) => Some(value.clone()),
+            _ => None,
+        }
+    }
+
+    fn java_string(&mut self, name: &str, arguments: &[Value]) -> Result<Value, VmError> {
+        match name {
+            "<init>" => Ok(Value::Null),
+            "length" => {
+                let object = arguments.first().ok_or(VmError::InvalidArguments)?.object()?;
+                let text = self.heap_string(object).unwrap_or_default();
+                Ok(Value::Int(i32::try_from(text.chars().count()).unwrap_or(i32::MAX)))
+            }
+            "equals" => {
+                let left = arguments
+                    .first()
+                    .and_then(|value| value.object().ok())
+                    .and_then(|object| self.heap_string(object))
+                    .unwrap_or_default();
+                let right = match arguments.get(1) {
+                    Some(Value::Reference(HeapRef::Object(object))) => {
+                        self.heap_string(*object).unwrap_or_default()
+                    }
+                    _ => String::new(),
+                };
+                Ok(Value::Int(i32::from(left == right)))
+            }
+            "hashCode" => {
+                let object = arguments.first().ok_or(VmError::InvalidArguments)?.object()?;
+                Ok(Value::Int(java_string_hash(&self.heap_string(object).unwrap_or_default())))
+            }
+            "toString" | "intern" => arguments.first().cloned().ok_or(VmError::InvalidArguments),
+            "valueOf" => {
+                let text = match arguments.first() {
+                    Some(Value::Null) | None => "null".to_owned(),
+                    Some(Value::Int(v)) => v.to_string(),
+                    Some(Value::Long(v)) => v.to_string(),
+                    Some(Value::Float(v)) => v.to_string(),
+                    Some(Value::Double(v)) => v.to_string(),
+                    Some(Value::Reference(HeapRef::Object(object))) => self
+                        .heap_string(*object)
+                        .unwrap_or_else(|| format!("Object@{}", object.0)),
+                    _ => String::new(),
+                };
+                Ok(Value::Reference(HeapRef::Object(self.allocate_string(text)?)))
+            }
+            "isEmpty" => {
+                let object = arguments.first().ok_or(VmError::InvalidArguments)?.object()?;
+                Ok(Value::Int(i32::from(self.heap_string(object).unwrap_or_default().is_empty())))
+            }
+            _ => Ok(Value::Null),
+        }
+    }
+
+    fn java_string_builder(
+        &mut self,
+        name: &str,
+        proto: &str,
+        arguments: &[Value],
+    ) -> Result<Value, VmError> {
+        let this = receiver_id(arguments).ok_or(VmError::NullReference)?;
+        match name {
+            "<init>" => {
+                let initial = if proto.contains("Ljava/lang/String;") {
+                    match arguments.get(1) {
+                        Some(Value::Reference(HeapRef::Object(object))) => {
+                            self.heap_string(*object).unwrap_or_default()
+                        }
+                        _ => String::new(),
+                    }
+                } else {
+                    String::new()
+                };
+                self.java.builders.insert(this, initial);
+                Ok(Value::Null)
+            }
+            "append" => {
+                let chunk = match arguments.get(1) {
+                    Some(Value::Null) | None => "null".to_owned(),
+                    Some(Value::Int(v)) => v.to_string(),
+                    Some(Value::Long(v)) => v.to_string(),
+                    Some(Value::Float(v)) => v.to_string(),
+                    Some(Value::Double(v)) => v.to_string(),
+                    Some(Value::Reference(HeapRef::Object(object))) => self
+                        .heap_string(*object)
+                        .or_else(|| self.java.builders.get(&object.0).cloned())
+                        .unwrap_or_else(|| "null".to_owned()),
+                    _ => String::new(),
+                };
+                self.java.builders.entry(this).or_default().push_str(&chunk);
+                Ok(arguments[0].clone())
+            }
+            "toString" => {
+                let text = self.java.builders.get(&this).cloned().unwrap_or_default();
+                Ok(Value::Reference(HeapRef::Object(self.allocate_string(text)?)))
+            }
+            "length" => Ok(Value::Int(
+                i32::try_from(self.java.builders.get(&this).map_or(0, String::len)).unwrap_or(i32::MAX),
+            )),
+            _ => Ok(arguments.first().cloned().unwrap_or(Value::Null)),
+        }
+    }
+
+    fn java_array_list(&mut self, name: &str, arguments: &[Value]) -> Result<Value, VmError> {
+        let this = receiver_id(arguments).ok_or(VmError::NullReference)?;
+        match name {
+            "<init>" => {
+                self.java.array_lists.insert(this, Vec::new());
+                Ok(Value::Null)
+            }
+            "add" => {
+                if let Some(value) = arguments.get(1).cloned() {
+                    self.java.array_lists.entry(this).or_default().push(value);
+                }
+                Ok(Value::Int(1))
+            }
+            "get" => {
+                let index = arguments.get(1).and_then(value_as_int).unwrap_or(0);
+                Ok(self
+                    .java
+                    .array_lists
+                    .entry(this)
+                    .or_default()
+                    .get(index as usize)
+                    .cloned()
+                    .unwrap_or(Value::Null))
+            }
+            "size" => Ok(Value::Int(
+                i32::try_from(self.java.array_lists.get(&this).map_or(0, Vec::len)).unwrap_or(i32::MAX),
+            )),
+            "clear" => {
+                if let Some(list) = self.java.array_lists.get_mut(&this) {
+                    list.clear();
+                }
+                Ok(Value::Null)
+            }
+            "isEmpty" => {
+                Ok(Value::Int(i32::from(self.java.array_lists.get(&this).is_none_or(Vec::is_empty))))
+            }
+            _ => Ok(Value::Null),
+        }
+    }
+
+    fn java_hash_map(&mut self, name: &str, arguments: &[Value]) -> Result<Value, VmError> {
+        let this = receiver_id(arguments).ok_or(VmError::NullReference)?;
+        match name {
+            "<init>" => {
+                self.java.hash_maps.insert(this, Vec::new());
+                Ok(Value::Null)
+            }
+            "put" => {
+                let key = ValueKey::from_value(arguments.get(1).unwrap_or(&Value::Null));
+                let value = arguments.get(2).cloned().unwrap_or(Value::Null);
+                let map = self.java.hash_maps.entry(this).or_default();
+                if let Some(slot) = map.iter_mut().find(|(existing, _)| *existing == key) {
+                    let previous = std::mem::replace(&mut slot.1, value);
+                    Ok(previous)
+                } else {
+                    map.push((key, value));
+                    Ok(Value::Null)
+                }
+            }
+            "get" | "containsKey" => {
+                let key = ValueKey::from_value(arguments.get(1).unwrap_or(&Value::Null));
+                let found = self.java.hash_maps.entry(this).or_default().iter().find(|(k, _)| *k == key);
+                if name == "containsKey" {
+                    Ok(Value::Int(i32::from(found.is_some())))
+                } else {
+                    Ok(found.map(|(_, v)| v.clone()).unwrap_or(Value::Null))
+                }
+            }
+            "size" => Ok(Value::Int(
+                i32::try_from(self.java.hash_maps.get(&this).map_or(0, Vec::len)).unwrap_or(i32::MAX),
+            )),
+            "clear" => {
+                if let Some(map) = self.java.hash_maps.get_mut(&this) {
+                    map.clear();
+                }
+                Ok(Value::Null)
+            }
+            _ => Ok(Value::Null),
+        }
+    }
+
+    fn java_array_deque(&mut self, name: &str, arguments: &[Value]) -> Result<Value, VmError> {
+        let this = receiver_id(arguments).ok_or(VmError::NullReference)?;
+        match name {
+            "<init>" => {
+                self.java.array_deques.insert(this, Vec::new());
+                Ok(Value::Null)
+            }
+            "add" | "offer" | "addLast" => {
+                if let Some(value) = arguments.get(1).cloned() {
+                    self.java.array_deques.entry(this).or_default().push(value);
+                }
+                Ok(Value::Int(1))
+            }
+            "poll" | "pollFirst" => {
+                let deque = self.java.array_deques.entry(this).or_default();
+                Ok(if deque.is_empty() { Value::Null } else { deque.remove(0) })
+            }
+            "size" => Ok(Value::Int(
+                i32::try_from(self.java.array_deques.get(&this).map_or(0, Vec::len)).unwrap_or(i32::MAX),
+            )),
+            _ => Ok(Value::Null),
+        }
+    }
+
+    fn java_atomic_int(
+        &mut self,
+        name: &str,
+        proto: &str,
+        arguments: &[Value],
+    ) -> Result<Value, VmError> {
+        let this = receiver_id(arguments).ok_or(VmError::NullReference)?;
+        match name {
+            "<init>" => {
+                let initial =
+                    if proto.starts_with("(I)") { arguments.get(1).and_then(value_as_int).unwrap_or(0) } else { 0 };
+                self.java.atomic_ints.insert(this, initial);
+                Ok(Value::Null)
+            }
+            "get" => Ok(Value::Int(*self.java.atomic_ints.entry(this).or_insert(0))),
+            "set" => {
+                self.java.atomic_ints.insert(this, arguments.get(1).and_then(value_as_int).unwrap_or(0));
+                Ok(Value::Null)
+            }
+            "incrementAndGet" => {
+                let slot = self.java.atomic_ints.entry(this).or_insert(0);
+                *slot = slot.saturating_add(1);
+                Ok(Value::Int(*slot))
+            }
+            "getAndIncrement" => {
+                let slot = self.java.atomic_ints.entry(this).or_insert(0);
+                let previous = *slot;
+                *slot = slot.saturating_add(1);
+                Ok(Value::Int(previous))
+            }
+            _ => Ok(Value::Int(0)),
+        }
+    }
+
+    fn java_atomic_ref(&mut self, name: &str, arguments: &[Value]) -> Result<Value, VmError> {
+        let this = receiver_id(arguments).ok_or(VmError::NullReference)?;
+        match name {
+            "<init>" => {
+                self.java.atomic_refs.insert(this, arguments.get(1).cloned().unwrap_or(Value::Null));
+                Ok(Value::Null)
+            }
+            "get" => Ok(self.java.atomic_refs.entry(this).or_insert(Value::Null).clone()),
+            "set" => {
+                self.java.atomic_refs.insert(this, arguments.get(1).cloned().unwrap_or(Value::Null));
+                Ok(Value::Null)
+            }
+            "getAndSet" => Ok(self
+                .java
+                .atomic_refs
+                .insert(this, arguments.get(1).cloned().unwrap_or(Value::Null))
+                .unwrap_or(Value::Null)),
+            _ => Ok(Value::Null),
+        }
+    }
+
+    fn java_weak_ref(&mut self, name: &str, arguments: &[Value]) -> Result<Value, VmError> {
+        let this = receiver_id(arguments).ok_or(VmError::NullReference)?;
+        match name {
+            "<init>" => {
+                self.java.weak_refs.insert(this, arguments.get(1).cloned().unwrap_or(Value::Null));
+                Ok(Value::Null)
+            }
+            "get" => Ok(self.java.weak_refs.get(&this).cloned().unwrap_or(Value::Null)),
+            "clear" => {
+                self.java.weak_refs.insert(this, Value::Null);
+                Ok(Value::Null)
+            }
+            _ => Ok(Value::Null),
+        }
+    }
+
+    fn java_enum(&mut self, name: &str, arguments: &[Value]) -> Result<Value, VmError> {
+        let this = receiver_id(arguments).ok_or(VmError::NullReference)?;
+        match name {
+            "<init>" => {
+                let label = match arguments.get(1) {
+                    Some(Value::Reference(HeapRef::Object(object))) => {
+                        self.heap_string(*object).unwrap_or_else(|| "enum".to_owned())
+                    }
+                    _ => "enum".to_owned(),
+                };
+                let ordinal = arguments.get(2).and_then(value_as_int).unwrap_or(0);
+                self.java.enum_meta.insert(this, (label, ordinal));
+                Ok(Value::Null)
+            }
+            "ordinal" => Ok(Value::Int(self.java.enum_meta.get(&this).map_or(0, |(_, o)| *o))),
+            "name" => {
+                let label =
+                    self.java.enum_meta.get(&this).map_or("enum", |(n, _)| n.as_str()).to_owned();
+                Ok(Value::Reference(HeapRef::Object(self.allocate_string(label)?)))
+            }
+            "equals" => Ok(Value::Int(i32::from(arguments.first() == arguments.get(1)))),
+            _ => Ok(Value::Null),
+        }
+    }
+
+    fn java_thread(&mut self, name: &str) -> Result<Value, VmError> {
+        if name == "currentThread" {
+            if self.java.main_thread.is_none() {
+                self.java.main_thread = Some(self.allocate_typed_object("Ljava/lang/Thread;")?);
+            }
+            return Ok(Value::Reference(HeapRef::Object(self.java.main_thread.unwrap())));
+        }
+        Ok(Value::Null)
+    }
+
+    fn java_looper(&mut self, name: &str) -> Result<Value, VmError> {
+        match name {
+            "getMainLooper" | "myLooper" => {
+                if self.java.main_looper.is_none() {
+                    self.java.main_looper = Some(self.allocate_typed_object("Landroid/os/Looper;")?);
+                }
+                Ok(Value::Reference(HeapRef::Object(self.java.main_looper.unwrap())))
+            }
+            "getThread" => {
+                if self.java.main_thread.is_none() {
+                    self.java.main_thread = Some(self.allocate_typed_object("Ljava/lang/Thread;")?);
+                }
+                Ok(Value::Reference(HeapRef::Object(self.java.main_thread.unwrap())))
+            }
+            "isCurrentThread" => Ok(Value::Int(1)),
+            _ => Ok(Value::Null),
+        }
+    }
+
+    fn java_class(&mut self, name: &str, arguments: &[Value]) -> Result<Value, VmError> {
+        if !matches!(name, "getName" | "getCanonicalName" | "getSimpleName") {
+            return Ok(Value::Null);
+        }
+        let object = arguments.first().ok_or(VmError::InvalidArguments)?.object()?;
+        let label = match self.heap_entry(object.0)? {
+            HeapEntry::Class(type_idx) => self.dex.type_descriptor(*type_idx)?.to_owned(),
+            HeapEntry::Object { class_idx, .. } => self.dex.type_descriptor(*class_idx)?.to_owned(),
+            HeapEntry::String(_) => "Ljava/lang/String;".to_owned(),
+            HeapEntry::Array { .. } => "[Ljava/lang/Object;".to_owned(),
+        };
+        let pretty = label.trim_start_matches('L').trim_end_matches(';').replace('/', ".");
+        Ok(Value::Reference(HeapRef::Object(self.allocate_string(pretty)?)))
+    }
+
+    fn java_math(&mut self, name: &str, arguments: &[Value]) -> Result<Value, VmError> {
+        let left = arguments.first().and_then(value_as_int).unwrap_or(0);
+        let right = arguments.get(1).and_then(value_as_int).unwrap_or(0);
+        Ok(Value::Int(match name {
+            "min" => left.min(right),
+            "max" => left.max(right),
+            "abs" => left.saturating_abs(),
+            _ => 0,
+        }))
+    }
+
+    fn java_objects(&mut self, name: &str, arguments: &[Value]) -> Result<Value, VmError> {
+        match name {
+            "equals" => Ok(Value::Int(i32::from(arguments.first() == arguments.get(1)))),
+            "requireNonNull" => arguments.first().cloned().ok_or(VmError::NullReference),
+            _ => Ok(Value::Null),
+        }
+    }
+
+    fn java_executors(&mut self, name: &str) -> Result<Value, VmError> {
+        if matches!(name, "newFixedThreadPool" | "newSingleThreadExecutor" | "newCachedThreadPool") {
+            Ok(Value::Reference(HeapRef::Object(
+                self.allocate_typed_object("Ljava/util/concurrent/ExecutorService;")?,
+            )))
+        } else {
+            Ok(Value::Null)
+        }
+    }
+
+    fn java_executor_service(
+        &mut self,
+        name: &str,
+        arguments: &[Value],
+    ) -> Result<Value, VmError> {
+        match name {
+            "execute" | "submit" => {
+                if let Some(Value::Reference(HeapRef::Object(runnable))) = arguments.get(1) {
+                    self.java.posted.push(*runnable);
+                }
+                Ok(if name == "submit" {
+                    Value::Reference(HeapRef::Object(
+                        self.allocate_typed_object("Ljava/util/concurrent/Future;")?,
+                    ))
+                } else {
+                    Value::Null
+                })
+            }
+            "shutdown" | "shutdownNow" => Ok(Value::Null),
+            "isShutdown" | "isTerminated" => Ok(Value::Int(0)),
+            _ => Ok(Value::Null),
+        }
+    }
+
+    fn java_handler(&mut self, name: &str, arguments: &[Value]) -> Result<Value, VmError> {
+        match name {
+            "<init>" => Ok(Value::Null),
+            "post" | "postDelayed" | "postAtFrontOfQueue" => {
+                if let Some(Value::Reference(HeapRef::Object(runnable))) = arguments.get(1) {
+                    self.java.posted.push(*runnable);
+                }
+                Ok(Value::Int(1))
+            }
+            _ => Ok(Value::Null),
+        }
+    }
+
+    fn java_bundle(&mut self, name: &str, arguments: &[Value]) -> Result<Value, VmError> {
+        match name {
+            "<init>" => {
+                if let Some(this) = receiver_id(arguments) {
+                    self.java.hash_maps.insert(this, Vec::new());
+                }
+                Ok(Value::Null)
+            }
+            "putString" | "putInt" | "putLong" | "putBoolean" | "putParcelable" => {
+                let this = receiver_id(arguments).ok_or(VmError::NullReference)?;
+                let key = ValueKey::from_value(arguments.get(1).unwrap_or(&Value::Null));
+                let value = arguments.get(2).cloned().unwrap_or(Value::Null);
+                let map = self.java.hash_maps.entry(this).or_default();
+                if let Some(slot) = map.iter_mut().find(|(existing, _)| *existing == key) {
+                    slot.1 = value;
+                } else {
+                    map.push((key, value));
+                }
+                Ok(Value::Null)
+            }
+            "getString" | "getInt" | "getLong" | "getBoolean" | "getParcelable" => {
+                let this = receiver_id(arguments).ok_or(VmError::NullReference)?;
+                let key = ValueKey::from_value(arguments.get(1).unwrap_or(&Value::Null));
+                Ok(self
+                    .java
+                    .hash_maps
+                    .entry(this)
+                    .or_default()
+                    .iter()
+                    .find(|(existing, _)| *existing == key)
+                    .map(|(_, value)| value.clone())
+                    .unwrap_or(Value::Null))
+            }
+            _ => Ok(Value::Null),
         }
     }
 

@@ -126,6 +126,19 @@ impl ResourceTable {
         self.key_names.get(entry.key_index as usize).map(String::as_str)
     }
 
+    /// Resolve a resource ID to an APK entry path (e.g. `res/-Q.xml` or `res/layout/main.xml`).
+    #[must_use]
+    pub fn resolve_resource_path(&self, id: u32) -> Option<&str> {
+        let entry = self.find_entry(id)?;
+        match entry.value {
+            ResourceValue::String(index) => {
+                let path = self.global_strings.get(index as usize)?.as_str();
+                if path.starts_with("res/") { Some(path) } else { None }
+            }
+            _ => None,
+        }
+    }
+
     fn find_entry(&self, id: u32) -> Option<&ResourceEntry> {
         let package = ((id >> 24) & 0xff) as u8;
         let type_id = ((id >> 16) & 0xff) as u16;

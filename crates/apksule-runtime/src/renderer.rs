@@ -31,7 +31,7 @@ pub fn render_launch_surface(
     let mut y = 34.0;
     draw_text(&mut pixmap, "APKSULE", margin, y, 4.0, (72, 201, 176, 255));
     y += 48.0;
-    draw_text(&mut pixmap, "СРЕДА СОВМЕСТИМОСТИ M3", margin, y, 2.0, (150, 164, 184, 255));
+    draw_text(&mut pixmap, "СРЕДА СОВМЕСТИМОСТИ M4", margin, y, 2.0, (150, 164, 184, 255));
     y += 42.0;
 
     let mut panel = Paint::default();
@@ -93,7 +93,7 @@ pub fn render_launch_surface(
     if height > 50 {
         draw_text(
             &mut pixmap,
-            "M3: UI APK. NOTALLY — M4",
+            "M4: NOTALLY",
             margin,
             height as f32 - 34.0,
             2.0,
@@ -173,7 +173,10 @@ pub fn render_view_surface(
                     (40, 48, 64, 255),
                 );
             }
-            ViewKind::LinearLayout { .. } | ViewKind::FrameLayout { .. } | ViewKind::View => {}
+            ViewKind::LinearLayout { .. }
+            | ViewKind::FrameLayout { .. }
+            | ViewKind::RecyclerView { .. }
+            | ViewKind::View => {}
         }
     }
 
@@ -331,7 +334,7 @@ mod tests {
         let text = "СРЕДА СОВМЕСТИМОСТИ ПАКЕТ ВЕРСИЯ ФАЙЛЫ РАЗРЕШЕНИЯ \
                     ТАБЛИЦА РЕСУРСОВ ЕСТЬ НЕТ СТАТУС ЗАГРУЖЕН ГОТОВО \
                     КЛАССОВ ВЫПОЛНЕНО ОШИБКА ЗАГЛУШКА ИНТЕРФЕЙС БУДЕТ ОГРАНИЧЕННО \
-                    M3 UI APK NOTALLY M4";
+                    M4 NOTALLY LIST EDIT SAVE";
 
         for character in text.chars().filter(|character| !character.is_whitespace()) {
             assert_ne!(glyph(character), unknown, "нет глифа для {character}");

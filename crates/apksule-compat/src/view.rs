@@ -82,20 +82,25 @@ pub enum ViewKind {
     Button { text: String },
     LinearLayout { orientation: Orientation, children: Vec<ViewId> },
     FrameLayout { children: Vec<ViewId> },
+    RecyclerView { children: Vec<ViewId> },
 }
 
 impl ViewKind {
     #[must_use]
     pub fn children(&self) -> &[ViewId] {
         match self {
-            Self::LinearLayout { children, .. } | Self::FrameLayout { children } => children,
+            Self::LinearLayout { children, .. }
+            | Self::FrameLayout { children }
+            | Self::RecyclerView { children } => children,
             _ => &[],
         }
     }
 
     pub fn children_mut(&mut self) -> Option<&mut Vec<ViewId>> {
         match self {
-            Self::LinearLayout { children, .. } | Self::FrameLayout { children } => Some(children),
+            Self::LinearLayout { children, .. }
+            | Self::FrameLayout { children }
+            | Self::RecyclerView { children } => Some(children),
             _ => None,
         }
     }

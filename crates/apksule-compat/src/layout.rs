@@ -123,7 +123,11 @@ pub fn inflate_axml(host: &UiHost, data: &[u8]) -> Result<ViewId> {
                     }
                 }
 
-                let is_group = name.contains("Layout") || name.contains("ViewGroup");
+                let is_group = name.contains("Layout")
+                    || name.contains("ViewGroup")
+                    || name.contains("RecyclerView")
+                    || name.contains("Toolbar")
+                    || name.contains("AppBar");
                 let kind = view_kind_for_name(&name, text, orientation);
                 let id = host.create_view(kind);
                 host.set_layout_params(
@@ -159,15 +163,35 @@ pub fn inflate_axml(host: &UiHost, data: &[u8]) -> Result<ViewId> {
 }
 
 fn view_kind_for_name(name: &str, text: String, orientation: Orientation) -> ViewKind {
-    if name.contains("Button") {
+    let short = name.rsplit('.').next().unwrap_or(name);
+    if short.contains("RecyclerView") || name.contains("RecyclerView") {
+        ViewKind::RecyclerView { children: Vec::new() }
+    } else if short.contains("Button")
+        || name.contains("MaterialButton")
+        || name.contains("Button")
+    {
         ViewKind::Button { text }
-    } else if name.contains("EditText") {
+    } else if short.contains("EditText")
+        || name.contains("TextInputEditText")
+        || name.contains("EditText")
+    {
         ViewKind::EditText { text }
-    } else if name.contains("TextView") {
+    } else if short.contains("TextView") || name.contains("TextView") {
         ViewKind::TextView { text }
-    } else if name.contains("Frame") {
+    } else if short.contains("Toolbar")
+        || short.contains("AppBar")
+        || name.contains("Toolbar")
+        || name.contains("AppBarLayout")
+        || name.contains("CoordinatorLayout")
+        || name.contains("Frame")
+        || short == "ViewGroup"
+    {
         ViewKind::FrameLayout { children: Vec::new() }
-    } else if name.contains("Linear") || name.contains("Layout") {
+    } else if short.contains("Linear")
+        || name.contains("LinearLayout")
+        || name.contains("Layout")
+        || name.contains("Constraint")
+    {
         ViewKind::LinearLayout { orientation, children: Vec::new() }
     } else {
         ViewKind::View

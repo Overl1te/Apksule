@@ -142,6 +142,26 @@ impl UiHost {
         });
     }
 
+    #[must_use]
+    pub fn find_view_by_android_id(&self, android_id: i32) -> Option<ViewId> {
+        self.with(|state| {
+            state.store.iter().find_map(|(id, node)| {
+                if node.android_id == android_id { Some(*id) } else { None }
+            })
+        })
+    }
+
+    pub fn clear_children(&self, id: ViewId) {
+        self.with_mut(|state| {
+            if let Some(node) = state.store.get_mut(id)
+                && let Some(children) = node.kind.children_mut()
+            {
+                children.clear();
+                state.dirty = true;
+            }
+        });
+    }
+
     pub fn set_layout_params(&self, id: ViewId, layout: LayoutParams) {
         self.with_mut(|state| {
             if let Some(node) = state.store.get_mut(id) {
@@ -312,7 +332,7 @@ fn measure(store: &mut ViewStore, id: ViewId, max_w: i32, max_h: i32) -> (i32, i
             }
             (cw, ch)
         }
-        ViewKind::FrameLayout { children } => {
+        ViewKind::FrameLayout { children } | ViewKind::RecyclerView { children } => {
             let mut cw: i32 = 0;
             let mut ch: i32 = 0;
             for child in children {
@@ -362,7 +382,7 @@ fn layout(store: &mut ViewStore, id: ViewId, left: i32, top: i32, width: i32, he
                 }
             }
         }
-        ViewKind::FrameLayout { children } => {
+        ViewKind::FrameLayout { children } | ViewKind::RecyclerView { children } => {
             for child in children {
                 let child_bounds = store.get(child).map(|n| n.bounds).unwrap_or_default();
                 layout(

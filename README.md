@@ -4,7 +4,9 @@ Apksule — эксперимент для Windows: лёгкий runtime совм
 только на Rust. Это **не** эмулятор Android: нет виртуального устройства,
 образа системы, ADB и стороннего Android runtime.
 
-Этап M3 реализует конвейер запуска, исполнение DEX и подмножество Android UI:
+Этап M4 доводит срез совместимости Notally: Java-core/Looper, SharedPreferences,
+SQLite/Room surface, `setContentView(id)`, RecyclerView и сохранение заметки
+между запусками. M3 уже дал конвейер запуска, DEX lifecycle и UI-дерево:
 
 1. открыть окно хоста Apksule (или сразу путь к APK);
 2. выбрать APK через нативный диалог Windows;
@@ -17,10 +19,9 @@ Apksule — эксперимент для Windows: лёгкий runtime совм
 9. доставить клики и ввод текста в View;
 10. журналировать неподдерживаемые вызовы Android API soft-stub’ами.
 
-M3 исполняет самогенерируемый тестовый APK с UI (клик/текст) и soft-stub’ит
-`java.*` / `android.*`, чтобы реальные APK вроде Notally **не падали** на
-отсутствующих framework-методах. UI Notally (AndroidX/RecyclerView/Room) —
-этап M4.
+M4 исполняет самогенерируемый тестовый APK с UI и persistence proof, а также
+ведёт Notally через prefs/SQLite/RecyclerView soft-path. Напоминания, PDF,
+аудио и виджеты остаются soft-stub.
 
 ## Архитектура
 
@@ -171,17 +172,19 @@ cargo run -p apksule -- $apk
 
 Ожидаемые значения inspection: пакет `com.omgodse.notally`, launcher activity
 `com.omgodse.notally.activities.MainActivity`, один DEX и скомпилированная
-таблица ресурсов. M3 soft-stub’ит framework и может показать ограниченный
-статус, но **UI Notally** ещё не реализован (M4).
+таблица ресурсов. M4 даёт prefs/SQLite/RecyclerView и `setContentView(id)`
+(включая obfuscated `res/*.xml` пути из `resources.arsc`).
 
-Критерий M3 проверяется без Android SDK:
+Критерий M3/M4 проверяется без Android SDK:
 
 ```powershell
 cargo test -p apksule-runtime --test m3_minimal_apk
+cargo test -p apksule-runtime --test m4_note_persistence
+cargo test -p apksule-compat prefs_persist -- --nocapture
 ```
 
-Тест сам собирает APK с `resources.arsc` + layout, исполняет `onCreate` /
-`setContentView`, проверяет отрисовку, клик и ввод текста.
+Тест M3 собирает APK с UI; M4 проверяет SharedPreferences + SQLite `BaseNote`
+между повторными открытиями хранилища.
 
 ## Хранилище и логи
 
@@ -192,6 +195,7 @@ cargo test -p apksule-runtime --test m3_minimal_apk
   files\
   cache\
   databases\
+  shared_prefs\
   logs\unsupported-api.log
 ```
 

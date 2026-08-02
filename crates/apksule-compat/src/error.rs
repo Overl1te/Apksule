@@ -18,6 +18,10 @@ pub enum CompatError {
     },
     #[error("resource source rejected {path}: {message}")]
     Resource { path: String, message: String },
+    #[error("SQLite error: {0}")]
+    Sqlite(String),
+    #[error("SharedPreferences error: {0}")]
+    Prefs(String),
     #[error("unsupported API log is unavailable because its lock was poisoned")]
     ApiLogPoisoned,
 }

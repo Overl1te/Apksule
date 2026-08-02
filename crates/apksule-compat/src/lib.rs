@@ -10,7 +10,9 @@ mod error;
 mod gms;
 mod input;
 mod layout;
+mod prefs;
 mod resources;
+mod sqlite;
 mod storage;
 mod ui_host;
 mod view;
@@ -25,11 +27,12 @@ pub use input::{
     AndroidKeyCode, InputEvent, KeyAction, KeyEvent, MotionAction, MotionEvent, PointerButton,
 };
 pub use layout::{build_minimal_layout_axml, inflate_axml, inflate_layout};
+pub use prefs::{PrefValue, SharedPreferencesStore};
 pub use resources::{ResourceSource, Resources};
+pub use sqlite::{SqliteRegistry, SqliteValue};
 pub use storage::AppStorage;
 pub use ui_host::UiHost;
 pub use view::{
     LayoutParams, Orientation, Rect, ViewId, ViewKind, ViewNode, ViewStore, Visibility,
 };
 pub use window::{WindowDelegate, WindowInsets, WindowMetrics};
-

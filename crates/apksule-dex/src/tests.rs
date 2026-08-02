@@ -130,3 +130,46 @@ fn enforces_instruction_and_heap_limits() {
     vm.set_limits(VmLimits { max_heap_entries: 0, ..VmLimits::default() });
     assert_eq!(vm.invoke("LTest;", "object", "()I", &[]), Err(VmError::HeapLimit));
 }
+
+#[test]
+fn string_builder_and_looper_singletons() {
+    use crate::{HeapRef, ObjectRef};
+
+    let dex = DexFile::parse(build_test_dex()).unwrap();
+    let mut vm = Vm::new(&dex);
+    let builder = vm.allocate_typed_object("Ljava/lang/StringBuilder;").unwrap();
+    let receiver = Value::Reference(HeapRef::Object(builder));
+    vm.invoke_builtin("Ljava/lang/StringBuilder;", "<init>", "()V", std::slice::from_ref(&receiver))
+        .unwrap();
+    let hello = Value::Reference(HeapRef::Object(vm.allocate_string("Hello").unwrap()));
+    let again = vm
+        .invoke_builtin(
+            "Ljava/lang/StringBuilder;",
+            "append",
+            "(Ljava/lang/String;)Ljava/lang/StringBuilder;",
+            &[receiver.clone(), hello],
+        )
+        .unwrap();
+    assert_eq!(again, receiver);
+    let text = vm
+        .invoke_builtin(
+            "Ljava/lang/StringBuilder;",
+            "toString",
+            "()Ljava/lang/String;",
+            &[receiver],
+        )
+        .unwrap();
+    let ObjectRef(id) = match text {
+        Value::Reference(HeapRef::Object(object)) => object,
+        other => panic!("expected string, got {other:?}"),
+    };
+    assert_eq!(vm.read_string(ObjectRef(id)).as_deref(), Some("Hello"));
+
+    let looper1 = vm
+        .invoke_builtin("Landroid/os/Looper;", "getMainLooper", "()Landroid/os/Looper;", &[])
+        .unwrap();
+    let looper2 = vm
+        .invoke_builtin("Landroid/os/Looper;", "getMainLooper", "()Landroid/os/Looper;", &[])
+        .unwrap();
+    assert_eq!(looper1, looper2);
+}

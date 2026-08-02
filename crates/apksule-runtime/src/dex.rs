@@ -1,7 +1,14 @@
+#![allow(
+    clippy::match_same_arms,
+    clippy::single_match_else,
+    clippy::too_many_lines
+)]
+
 use apksule_apk::ApkPackage;
 use apksule_compat::{
-    AndroidKeyCode, Context, InputEvent, KeyAction, MotionAction, Orientation, ResourceTable,
-    UiHost, ViewKind, build_minimal_layout_axml, inflate_axml, inflate_layout,
+    AndroidKeyCode, Context, InputEvent, KeyAction, MotionAction, Orientation, PrefValue,
+    ResourceTable, SharedPreferencesStore, SqliteRegistry, SqliteValue, UiHost, ViewId, ViewKind,
+    build_minimal_layout_axml, inflate_axml, inflate_layout,
 };
 use apksule_dex::{
     DexFile, HeapRef, NativeBridge, NativeResult, ObjectRef, ResolvedMethod, Value, Vm, VmError,
@@ -177,14 +184,35 @@ impl InterpretingDexRuntime {
                     };
                 }
                 tracing::info!(activity = %descriptor, %method, ?state, "DEX method executed");
+                self.drain_posted();
             }
             Err(error) => {
                 // Lifecycle misses stay non-fatal: Notally and similar apps hit missing
-                // framework surfaces that M3 deliberately stubs.
+                // framework surfaces that M4 deliberately stubs.
                 self.degrade(&context, &activity, method, error.to_string())?;
+                self.drain_posted();
             }
         }
         Ok(())
+    }
+
+    fn drain_posted(&mut self) {
+        let Some(vm) = self.vm.as_mut() else {
+            return;
+        };
+        for _ in 0..32 {
+            let posted = vm.take_posted();
+            if posted.is_empty() {
+                break;
+            }
+            for runnable in posted {
+                let Ok(class) = vm.object_type_descriptor(runnable) else {
+                    continue;
+                };
+                let receiver = Value::Reference(HeapRef::Object(runnable));
+                let _ = vm.invoke(&class, "run", "()V", &[receiver]);
+            }
+        }
     }
 
     fn handle_key_down(&mut self, event: &apksule_compat::KeyEvent) {
@@ -357,17 +385,48 @@ impl DexRuntime for InterpretingDexRuntime {
 struct AndroidBridge {
     context: Context,
     ui_host: UiHost,
+    arg_strings: Vec<Option<String>>,
+    prefs: std::collections::HashMap<u32, SharedPreferencesStore>,
+    editors: std::collections::HashMap<u32, SharedPreferencesStore>,
+    sqlite: SqliteRegistry,
+    db_objects: std::collections::HashMap<u32, u32>,
+    helpers: std::collections::HashMap<u32, String>,
+    recycler_adapters: std::collections::HashMap<u32, u32>,
+    pending_find_view: Option<ViewId>,
+    pending_prefs: Option<SharedPreferencesStore>,
+    pending_editor: Option<SharedPreferencesStore>,
+    pending_db: Option<u32>,
+    pending_string: Option<String>,
 }
 
 impl AndroidBridge {
     const MARKER_CLASS: &'static str = "Ldev/apksule/Bridge;";
 
     fn new(context: Context, ui_host: UiHost) -> Self {
-        Self { context, ui_host }
+        Self {
+            context,
+            ui_host,
+            arg_strings: Vec::new(),
+            prefs: std::collections::HashMap::new(),
+            editors: std::collections::HashMap::new(),
+            sqlite: SqliteRegistry::new(),
+            db_objects: std::collections::HashMap::new(),
+            helpers: std::collections::HashMap::new(),
+            recycler_adapters: std::collections::HashMap::new(),
+            pending_find_view: None,
+            pending_prefs: None,
+            pending_editor: None,
+            pending_db: None,
+            pending_string: None,
+        }
     }
 
-    fn install_main_layout(&mut self) -> Result<(), VmError> {
-        let root = self.resolve_main_layout()?;
+    fn arg_string(&self, index: usize) -> Option<String> {
+        self.arg_strings.get(index).and_then(std::clone::Clone::clone)
+    }
+
+    fn install_layout(&mut self, layout_id: Option<i32>) -> Result<(), VmError> {
+        let root = self.resolve_layout(layout_id)?;
         self.ui_host.set_content_view(root);
         for node in self.ui_host.snapshot() {
             if matches!(node.kind, ViewKind::Button { .. }) {
@@ -377,13 +436,35 @@ impl AndroidBridge {
         Ok(())
     }
 
-    fn resolve_main_layout(&mut self) -> Result<apksule_compat::ViewId, VmError> {
+    fn resolve_layout(&mut self, layout_id: Option<i32>) -> Result<ViewId, VmError> {
         let table = self
             .context
             .resources()
             .load_compiled_table()
             .ok()
             .and_then(|bytes| ResourceTable::parse(&bytes).ok());
+
+        if let (Some(table), Some(id)) = (table.as_ref(), layout_id) {
+            let id = id.cast_unsigned();
+            if let Some(path) = table.resolve_resource_path(id)
+                && let Ok(bytes) = self.context.resources().load_entry(path)
+            {
+                return inflate_layout(&self.ui_host, table, id, &bytes)
+                    .map_err(|error| VmError::NativeBridge(error.to_string()));
+            }
+            if let Some(name) = table.layout_name(id) {
+                for path in [
+                    format!("res/layout/{name}.xml"),
+                    format!("res/layout/{name}"),
+                    format!("res/{name}.xml"),
+                ] {
+                    if let Ok(bytes) = self.context.resources().load_entry(&path) {
+                        return inflate_layout(&self.ui_host, table, id, &bytes)
+                            .map_err(|error| VmError::NativeBridge(error.to_string()));
+                    }
+                }
+            }
+        }
 
         let layout_bytes = self
             .context
@@ -393,8 +474,8 @@ impl AndroidBridge {
 
         match (table.as_ref(), layout_bytes) {
             (Some(table), Ok(bytes)) => {
-                if let Some(layout_id) = table.resource_id("layout", "main") {
-                    inflate_layout(&self.ui_host, table, layout_id, &bytes)
+                if let Some(main_id) = table.resource_id("layout", "main") {
+                    inflate_layout(&self.ui_host, table, main_id, &bytes)
                         .map_err(|error| VmError::NativeBridge(error.to_string()))
                 } else {
                     inflate_axml(&self.ui_host, &bytes)
@@ -404,11 +485,216 @@ impl AndroidBridge {
             (None, Ok(bytes)) => inflate_axml(&self.ui_host, &bytes)
                 .map_err(|error| VmError::NativeBridge(error.to_string())),
             _ => {
-                let axml = build_minimal_layout_axml("Apksule M3", "Save");
+                let axml = build_minimal_layout_axml("Apksule M4", "Save");
                 inflate_axml(&self.ui_host, &axml)
                     .map_err(|error| VmError::NativeBridge(error.to_string()))
             }
         }
+    }
+
+    fn open_prefs(&mut self, name: &str) -> Result<NativeResult, VmError> {
+        let store = SharedPreferencesStore::open(self.context.storage(), name)
+            .map_err(|error| VmError::NativeBridge(error.to_string()))?;
+        self.pending_prefs = Some(store);
+        Ok(NativeResult::Handled(Value::Null))
+    }
+
+    fn handle_prefs(
+        &mut self,
+        method: &ResolvedMethod,
+        arguments: &[Value],
+    ) -> Option<Result<NativeResult, VmError>> {
+        let class = method.class_descriptor.as_str();
+        let name = method.name.as_str();
+
+        if name == "getSharedPreferences" {
+            let prefs_name = self.arg_string(1).unwrap_or_else(|| "default".to_owned());
+            return Some(self.open_prefs(&prefs_name));
+        }
+
+        if class.contains("SharedPreferences") && class.contains("Editor") {
+            let this = arguments.first().and_then(value_object_id)?;
+            let store = self.editors.get(&this)?.clone();
+            let key = self.arg_string(1).unwrap_or_default();
+            return Some(Ok(NativeResult::Handled(match name {
+                "putString" => {
+                    let value = self.arg_string(2).unwrap_or_default();
+                    let _ = store.put(key, PrefValue::String(value));
+                    arguments[0].clone()
+                }
+                "putInt" => {
+                    let value = match arguments.get(2) {
+                        Some(Value::Int(v)) => *v,
+                        _ => 0,
+                    };
+                    let _ = store.put(key, PrefValue::Int(value));
+                    arguments[0].clone()
+                }
+                "putLong" => {
+                    let value = match arguments.get(2) {
+                        Some(Value::Long(v)) => *v,
+                        Some(Value::Int(v)) => i64::from(*v),
+                        _ => 0,
+                    };
+                    let _ = store.put(key, PrefValue::Long(value));
+                    arguments[0].clone()
+                }
+                "putBoolean" => {
+                    let value = matches!(arguments.get(2), Some(Value::Int(v)) if *v != 0);
+                    let _ = store.put(key, PrefValue::Bool(value));
+                    arguments[0].clone()
+                }
+                "remove" => {
+                    let _ = store.remove(&key);
+                    arguments[0].clone()
+                }
+                "clear" => {
+                    let _ = store.clear();
+                    arguments[0].clone()
+                }
+                "apply" => {
+                    let _ = store.commit();
+                    Value::Null
+                }
+                "commit" => {
+                    let _ = store.commit();
+                    Value::Int(1)
+                }
+                _ => return None,
+            })));
+        }
+
+        if class.contains("SharedPreferences") {
+            let this = arguments.first().and_then(value_object_id)?;
+            let store = self.prefs.get(&this)?.clone();
+            let key = self.arg_string(1).unwrap_or_default();
+            return Some(Ok(NativeResult::Handled(match name {
+                "getString" => match store.get(&key) {
+                    Some(PrefValue::String(value)) => {
+                        self.pending_string = Some(value);
+                        Value::Null
+                    }
+                    _ => {
+                        self.pending_string = self.arg_string(2);
+                        Value::Null
+                    }
+                },
+                "getInt" => Value::Int(match store.get(&key) {
+                    Some(PrefValue::Int(value)) => value,
+                    _ => match arguments.get(2) {
+                        Some(Value::Int(value)) => *value,
+                        _ => 0,
+                    },
+                }),
+                "getLong" => Value::Long(match store.get(&key) {
+                    Some(PrefValue::Long(value)) => value,
+                    Some(PrefValue::Int(value)) => i64::from(value),
+                    _ => 0,
+                }),
+                "getBoolean" => Value::Int(i32::from(matches!(
+                    store.get(&key),
+                    Some(PrefValue::Bool(true))
+                ))),
+                "contains" => Value::Int(i32::from(store.contains(&key))),
+                "edit" => {
+                    self.pending_editor = Some(store);
+                    Value::Null
+                }
+                _ => return None,
+            })));
+        }
+
+        None
+    }
+
+    fn handle_sqlite(
+        &mut self,
+        method: &ResolvedMethod,
+        arguments: &[Value],
+    ) -> Option<Result<NativeResult, VmError>> {
+        let class = method.class_descriptor.as_str();
+        let name = method.name.as_str();
+
+        if (class.contains("SQLiteOpenHelper") || class.contains("SupportSQLiteOpenHelper"))
+            && name == "<init>"
+        {
+            if let Some(this) = arguments.first().and_then(value_object_id) {
+                let db_name = self.arg_string(2).unwrap_or_else(|| "NotallyDatabase".to_owned());
+                self.helpers.insert(this, db_name);
+            }
+            return Some(Ok(NativeResult::Handled(Value::Null)));
+        }
+
+        if (class.contains("SQLiteOpenHelper") || class.contains("SupportSQLiteOpenHelper"))
+            && matches!(name, "getWritableDatabase" | "getReadableDatabase" | "getWritableSupportDatabase" | "getReadableSupportDatabase")
+        {
+            let this = arguments.first().and_then(value_object_id)?;
+            let db_name = self
+                .helpers
+                .get(&this)
+                .cloned()
+                .unwrap_or_else(|| "NotallyDatabase".to_owned());
+            return Some(self.open_db(&db_name));
+        }
+
+        if class.contains("SQLiteDatabase") || class.contains("SupportSQLiteDatabase") {
+            let this = arguments.first().and_then(value_object_id)?;
+            let db_id = *self.db_objects.get(&this)?;
+            return Some(Ok(NativeResult::Handled(match name {
+                "execSQL" => {
+                    let sql = self.arg_string(1).unwrap_or_default();
+                    if let Err(error) = self.sqlite.exec_sql(db_id, &sql) {
+                        return Some(Err(VmError::NativeBridge(error.to_string())));
+                    }
+                    Value::Null
+                }
+                "isOpen" => Value::Int(1),
+                "close" => {
+                    let _ = self.sqlite.close(db_id);
+                    Value::Null
+                }
+                "getPath" => {
+                    if let Ok(path) = self.sqlite.path(db_id) {
+                        self.pending_string =
+                            Some(path.to_string_lossy().replace('\\', "/"));
+                    }
+                    Value::Null
+                }
+                "beginTransaction" | "endTransaction" | "setTransactionSuccessful" => Value::Null,
+                "insert" => {
+                    // Soft-ish path: Room usually uses compileStatement; keep non-fatal.
+                    Value::Long(0)
+                }
+                "query" | "rawQuery" => Value::Null,
+                _ => return None,
+            })));
+        }
+
+        if class.contains("RoomDatabase") && matches!(name, "getOpenHelper" | "getInvalidationTracker")
+        {
+            return Some(Ok(NativeResult::Handled(Value::Null)));
+        }
+
+        None
+    }
+
+    fn open_db(&mut self, name: &str) -> Result<NativeResult, VmError> {
+        let db_id = self
+            .sqlite
+            .open(self.context.storage(), name)
+            .map_err(|error| VmError::NativeBridge(error.to_string()))?;
+        // Ensure Notally-like schema exists for persistence proof paths.
+        let _ = self.sqlite.exec_sql(
+            db_id,
+            "CREATE TABLE IF NOT EXISTS BaseNote (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                title TEXT NOT NULL DEFAULT '',\
+                body TEXT NOT NULL DEFAULT '',\
+                type TEXT NOT NULL DEFAULT 'NOTE'\
+             );",
+        );
+        self.pending_db = Some(db_id);
+        Ok(NativeResult::Handled(Value::Null))
     }
 
     fn handle_view_method(
@@ -416,7 +702,59 @@ impl AndroidBridge {
         method: &ResolvedMethod,
         arguments: &[Value],
     ) -> Option<NativeResult> {
-        if !is_view_class(&method.class_descriptor) {
+        let class = method.class_descriptor.as_str();
+        let is_recycler = class.contains("RecyclerView");
+        if !is_view_class(class) && !is_recycler && !class.contains("AppCompat") {
+            // findViewById / setContentView handled elsewhere
+        }
+
+        if method.name == "findViewById" {
+            let id = match arguments.get(1) {
+                Some(Value::Int(value)) => *value,
+                _ => 0,
+            };
+            if let Some(view) = self.ui_host.find_view_by_android_id(id) {
+                self.pending_find_view = Some(view);
+            }
+            return Some(NativeResult::Handled(Value::Null));
+        }
+
+        if is_recycler {
+            match method.name.as_str() {
+                "<init>" => {
+                    if let Some(object_id) = arguments.first().and_then(value_object_id) {
+                        let view = self.ui_host.create_view(ViewKind::RecyclerView {
+                            children: Vec::new(),
+                        });
+                        self.ui_host.bind_object(object_id, view);
+                    }
+                    return Some(NativeResult::Handled(Value::Null));
+                }
+                "setAdapter" => {
+                    if let (Some(recycler), Some(adapter)) = (
+                        arguments.first().and_then(value_object_id),
+                        arguments.get(1).and_then(value_object_id),
+                    ) {
+                        self.recycler_adapters.insert(recycler, adapter);
+                        if let Some(view) = self.ui_host.view_for_object(recycler) {
+                            // Placeholder row so list surfaces are non-empty after bind.
+                            let row = self.ui_host.create_view(ViewKind::TextView {
+                                text: "Notes".to_owned(),
+                            });
+                            self.ui_host.clear_children(view);
+                            self.ui_host.add_child(view, row);
+                        }
+                    }
+                    return Some(NativeResult::Handled(Value::Null));
+                }
+                "setLayoutManager" | "notifyDataSetChanged" | "invalidateItemDecorations" => {
+                    return Some(NativeResult::Handled(Value::Null));
+                }
+                _ => {}
+            }
+        }
+
+        if !is_view_class(class) {
             return None;
         }
 
@@ -446,7 +784,9 @@ impl AndroidBridge {
                 if let Some(object_id) = arguments.first().and_then(value_object_id)
                     && let Some(view) = self.ui_host.view_for_object(object_id)
                 {
-                    if let Some(Value::Int(resource_id)) = arguments.get(1)
+                    if let Some(text) = self.arg_string(1) {
+                        self.ui_host.set_text(view, text);
+                    } else if let Some(Value::Int(resource_id)) = arguments.get(1)
                         && let Ok(bytes) = self.context.resources().load_compiled_table()
                         && let Ok(table) = ResourceTable::parse(&bytes)
                         && let Some(text) =
@@ -477,6 +817,50 @@ impl AndroidBridge {
 }
 
 impl NativeBridge for AndroidBridge {
+    fn set_arg_strings(&mut self, strings: Vec<Option<String>>) {
+        self.arg_strings = strings;
+    }
+
+    fn take_string_return(&mut self) -> Option<String> {
+        self.pending_string.take()
+    }
+
+    fn on_materialized(
+        &mut self,
+        method: &ResolvedMethod,
+        value: &Value,
+        _arguments: &[Value],
+    ) {
+        let Some(object_id) = value_object_id(value) else {
+            return;
+        };
+        if method.name == "findViewById"
+            && let Some(view) = self.pending_find_view.take()
+        {
+            self.ui_host.bind_object(object_id, view);
+        }
+        if method.name == "getSharedPreferences"
+            && let Some(store) = self.pending_prefs.take()
+        {
+            self.prefs.insert(object_id, store);
+        }
+        if method.name == "edit"
+            && let Some(store) = self.pending_editor.take()
+        {
+            self.editors.insert(object_id, store);
+        }
+        if matches!(
+            method.name.as_str(),
+            "getWritableDatabase"
+                | "getReadableDatabase"
+                | "getWritableSupportDatabase"
+                | "getReadableSupportDatabase"
+        ) && let Some(db_id) = self.pending_db.take()
+        {
+            self.db_objects.insert(object_id, db_id);
+        }
+    }
+
     fn invoke(
         &mut self,
         method: &ResolvedMethod,
@@ -492,7 +876,30 @@ impl NativeBridge for AndroidBridge {
                     return Ok(NativeResult::Handled(Value::Null));
                 }
                 "setContentView" | "installUi" => {
-                    self.install_main_layout()?;
+                    self.install_layout(None)?;
+                    return Ok(NativeResult::Handled(Value::Null));
+                }
+                "saveNote" => {
+                    let title = self.arg_string(0).unwrap_or_else(|| "note".to_owned());
+                    let body = self.arg_string(1).unwrap_or_default();
+                    let db_id = self
+                        .sqlite
+                        .open(self.context.storage(), "NotallyDatabase")
+                        .map_err(|error| VmError::NativeBridge(error.to_string()))?;
+                    let _ = self.sqlite.exec_sql(
+                        db_id,
+                        "CREATE TABLE IF NOT EXISTS BaseNote (\
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                            title TEXT NOT NULL DEFAULT '',\
+                            body TEXT NOT NULL DEFAULT '',\
+                            type TEXT NOT NULL DEFAULT 'NOTE');",
+                    );
+                    let _ = self.sqlite.insert(
+                        db_id,
+                        "BaseNote",
+                        &["title".into(), "body".into()],
+                        &[SqliteValue::Text(title), SqliteValue::Text(body)],
+                    );
                     return Ok(NativeResult::Handled(Value::Null));
                 }
                 _ => {}
@@ -509,16 +916,45 @@ impl NativeBridge for AndroidBridge {
             return Ok(NativeResult::Handled(value));
         }
 
-        if method.name == "setContentView"
-            && (method.prototype.starts_with("(I)")
-                || method.prototype.contains("Landroid/view/View;"))
-        {
-            self.install_main_layout()?;
-            return Ok(NativeResult::Handled(Value::Null));
+        if method.name == "setContentView" {
+            if method.prototype.starts_with("(I)") {
+                let layout_id = match arguments.get(1) {
+                    Some(Value::Int(value)) => Some(*value),
+                    _ => None,
+                };
+                self.install_layout(layout_id)?;
+                return Ok(NativeResult::Handled(Value::Null));
+            }
+            if method.prototype.contains("Landroid/view/View;") {
+                if let Some(object_id) = arguments.get(1).and_then(value_object_id)
+                    && let Some(view) = self.ui_host.view_for_object(object_id)
+                {
+                    self.ui_host.set_content_view(view);
+                } else {
+                    self.install_layout(None)?;
+                }
+                return Ok(NativeResult::Handled(Value::Null));
+            }
         }
 
+        if let Some(result) = self.handle_prefs(method, arguments) {
+            return result;
+        }
+        if let Some(result) = self.handle_sqlite(method, arguments) {
+            return result;
+        }
         if let Some(result) = self.handle_view_method(method, arguments) {
             return Ok(result);
+        }
+
+        // Soft-stub reminders / widgets / PDF / audio / unused providers.
+        if is_explicit_soft_feature(&method.class_descriptor) {
+            let _ = self.context.unsupported_api(
+                method.class_descriptor.clone(),
+                method.name.clone(),
+                format!("M4 soft-stub для {}", method.prototype),
+            );
+            return Ok(NativeResult::Handled(default_return_value(&method.prototype)));
         }
 
         if is_soft_stub_class(&method.class_descriptor) {
@@ -526,13 +962,12 @@ impl NativeBridge for AndroidBridge {
                 .unsupported_api(
                     method.class_descriptor.clone(),
                     method.name.clone(),
-                    format!("M3 fallback для {}", method.prototype),
+                    format!("M4 fallback для {}", method.prototype),
                 )
                 .map_err(|error| VmError::NativeBridge(error.to_string()))?;
             return Ok(NativeResult::Handled(default_return_value(&method.prototype)));
         }
 
-        // Unknown APK-local natives still fail hard; standard/Java/Android never do.
         Ok(NativeResult::Unresolved)
     }
 }
@@ -554,23 +989,47 @@ fn is_view_class(descriptor: &str) -> bool {
             | "Landroid/widget/Button;"
             | "Landroid/widget/LinearLayout;"
             | "Landroid/widget/FrameLayout;"
-    )
+    ) || descriptor.contains("TextView")
+        || descriptor.contains("EditText")
+        || descriptor.contains("Button")
+        || descriptor.contains("LinearLayout")
+        || descriptor.contains("FrameLayout")
 }
 
 fn view_kind_for_descriptor(descriptor: &str) -> ViewKind {
-    match descriptor {
-        "Landroid/widget/Button;" => ViewKind::Button { text: String::new() },
-        "Landroid/widget/EditText;" => ViewKind::EditText { text: String::new() },
-        "Landroid/widget/TextView;" => ViewKind::TextView { text: String::new() },
-        "Landroid/widget/FrameLayout;" | "Landroid/view/ViewGroup;" => {
-            ViewKind::FrameLayout { children: Vec::new() }
-        }
-        "Landroid/widget/LinearLayout;" => ViewKind::LinearLayout {
+    if descriptor.contains("RecyclerView") {
+        ViewKind::RecyclerView { children: Vec::new() }
+    } else if descriptor.contains("Button") {
+        ViewKind::Button { text: String::new() }
+    } else if descriptor.contains("EditText") {
+        ViewKind::EditText { text: String::new() }
+    } else if descriptor.contains("TextView") {
+        ViewKind::TextView { text: String::new() }
+    } else if descriptor.contains("FrameLayout")
+        || descriptor.contains("ViewGroup")
+        || descriptor.contains("Toolbar")
+        || descriptor.contains("AppBar")
+    {
+        ViewKind::FrameLayout { children: Vec::new() }
+    } else if descriptor.contains("LinearLayout") || descriptor.contains("Constraint") {
+        ViewKind::LinearLayout {
             orientation: Orientation::Vertical,
             children: Vec::new(),
-        },
-        _ => ViewKind::View,
+        }
+    } else {
+        ViewKind::View
     }
+}
+
+fn is_explicit_soft_feature(descriptor: &str) -> bool {
+    descriptor.contains("AlarmManager")
+        || descriptor.contains("Notification")
+        || descriptor.contains("AppWidget")
+        || descriptor.contains("Pdf")
+        || descriptor.contains("MediaRecorder")
+        || descriptor.contains("AudioRecord")
+        || descriptor.contains("Ringtone")
+        || descriptor.contains("WorkManager")
 }
 
 fn is_soft_stub_class(descriptor: &str) -> bool {
